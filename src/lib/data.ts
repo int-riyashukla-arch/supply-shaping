@@ -303,7 +303,7 @@ export async function updatePartner(id: string, fields: Partial<Omit<Partner, 'i
 // Two-step: beautician taps check-in (sets checkin_at), hub manager validates
 // (sets status + validated + notes). Gracefully degrades if the table is missing.
 
-export type AttendanceStatus = 'present' | 'absent' | 'leave'
+export type AttendanceStatus = 'present' | 'weekly_off' | 'unpaid_leave'
 
 export interface AttendanceRecord {
   partnerId: string

@@ -85,16 +85,21 @@ const PRESETS: { mode: RangeMode; label: string }[] = [
   { mode: 'last7', label: 'Last 7 days' },
 ]
 
-export function DateRangePicker({ value, onChange }: {
+export function DateRangePicker({ value, onChange, hideModes, singleCustom }: {
   value: DateRange
   onChange: (r: DateRange) => void
+  /** Preset mode buttons to hide (e.g. ['last7'] for per-day views) */
+  hideModes?: RangeMode[]
+  /** When true, the custom picker shows a single date input (start = end) */
+  singleCustom?: boolean
 }) {
   const [showCustom, setShowCustom] = useState(value.mode === 'custom')
   const todayLabel = niceDate(makeRange('today').start)
+  const hide = new Set(hideModes ?? [])
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {PRESETS.map((p) => {
+      {PRESETS.filter((p) => !hide.has(p.mode)).map((p) => {
         const active = value.mode === p.mode
         return (
           <button
@@ -114,7 +119,7 @@ export function DateRangePicker({ value, onChange }: {
       })}
 
       <button
-        onClick={() => { setShowCustom(true); onChange(makeRange('custom', value.start, value.end)) }}
+        onClick={() => { setShowCustom(true); onChange(makeRange('custom', value.start, singleCustom ? value.start : value.end)) }}
         className={cn(
           'px-3.5 py-1.5 rounded-full text-sm font-medium border transition-colors',
           value.mode === 'custom' ? 'bg-orange-500 text-white border-orange-500' : 'bg-white text-gray-600 border-gray-200 hover:border-orange-300'
@@ -128,17 +133,24 @@ export function DateRangePicker({ value, onChange }: {
           <input
             type="date"
             value={value.start}
-            onChange={(e) => onChange(makeRange('custom', e.target.value, value.end))}
+            onChange={(e) => {
+              const d = e.target.value
+              onChange(makeRange('custom', d, singleCustom ? d : value.end))
+            }}
             className="border border-gray-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
-          <span className="text-gray-400 text-sm">→</span>
-          <input
-            type="date"
-            value={value.end}
-            min={value.start}
-            onChange={(e) => onChange(makeRange('custom', value.start, e.target.value))}
-            className="border border-gray-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
+          {!singleCustom && (
+            <>
+              <span className="text-gray-400 text-sm">→</span>
+              <input
+                type="date"
+                value={value.end}
+                min={value.start}
+                onChange={(e) => onChange(makeRange('custom', value.start, e.target.value))}
+                className="border border-gray-200 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </>
+          )}
         </div>
       )}
     </div>

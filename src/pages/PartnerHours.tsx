@@ -97,7 +97,7 @@ export default function PartnerHours() {
   const days = weekdaysInRange(range)
   const n = days.length || 1
   const absentIds = new Set(
-    Object.values(attendance).filter((a) => a.status === 'absent' || a.status === 'leave').map((a) => a.partnerId)
+    Object.values(attendance).filter((a) => a.status === 'weekly_off' || a.status === 'unpaid_leave').map((a) => a.partnerId)
   )
 
   // Per-hour averages across the selected weekday(s).
@@ -140,7 +140,7 @@ export default function PartnerHours() {
         {singleConcrete && (
           <p className="text-xs mt-3 flex items-center gap-1.5">
             {hasAttendance ? (
-              <span className="text-red-600 flex items-center gap-1.5"><UserX size={13} /> Reflecting attendance for {niceDate(range.start)} — {totalAbsent} marked absent/leave.</span>
+              <span className="text-red-600 flex items-center gap-1.5"><UserX size={13} /> Reflecting attendance for {niceDate(range.start)} — {totalAbsent} marked weekly off / unpaid leave.</span>
             ) : (
               <span className="text-gray-400">No attendance recorded for {niceDate(range.start)} yet — showing the full rostered team.</span>
             )}
@@ -183,7 +183,7 @@ export default function PartnerHours() {
                   { label: 'Demand',     align: 'left' },
                   { label: 'Ratio',      align: 'left' },
                   { label: 'Active',     align: 'center', hint: 'partners working this hour (minus absentees)' },
-                  { label: 'Absent',     align: 'center', hint: 'on-shift partners marked absent/leave via attendance' },
+                  { label: 'Absent',     align: 'center', hint: 'on-shift partners marked weekly off or unpaid leave via attendance' },
                   { label: 'Weekly Off', align: 'center', hint: 'partners whose shift covers this hour but are on weekly off' },
                 ].map((h) => (
                   <th key={h.label} title={h.hint}

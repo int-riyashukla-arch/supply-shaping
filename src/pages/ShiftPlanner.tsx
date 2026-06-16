@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import { ComposedChart, Bar, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { AlertTriangle, TrendingUp, Clock, Users, RefreshCw, CheckCircle, Sparkles, ChevronDown } from 'lucide-react'
 import {
   DAYS, HOURS, CAPACITY_PER_PARTNER_PER_HOUR,
@@ -80,7 +80,6 @@ const CustomTooltip = ({ active, payload, label }: {
   if (!row) return null
   const cov = Math.round((row.coverage ?? 0) * 100)
   const covColor = cov >= 85 ? 'text-emerald-600' : cov >= 60 ? 'text-amber-600' : 'text-red-600'
-  const gap = row.demand - row.supply
   const line = (k: string, v: string, cls = 'text-gray-800') => (
     <div className="flex justify-between gap-6">
       <span className="text-gray-500">{k}</span>
@@ -88,12 +87,11 @@ const CustomTooltip = ({ active, payload, label }: {
     </div>
   )
   return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs min-w-[200px]">
+    <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs min-w-[210px]">
       <p className="font-semibold text-gray-800 mb-2">{label}</p>
       <div className="space-y-1">
-        {line('Demand (orders)', row.demand.toFixed(1), 'text-orange-600')}
-        {line('Supply (orders)', row.supply.toFixed(1), 'text-blue-600')}
-        {line(gap > 0 ? 'Short by' : 'Surplus', Math.abs(gap).toFixed(1), gap > 0 ? 'text-red-600' : 'text-emerald-600')}
+        {line('Demand', `${row.demand.toFixed(1)} orders/hr`, 'text-orange-600')}
+        {line('Supply', `${row.supply.toFixed(1)} partners`, 'text-indigo-600')}
         <div className="flex justify-between gap-6 border-t border-gray-100 pt-1 mt-1 font-semibold">
           <span className="text-gray-600">Coverage</span>
           <span className={covColor}>{cov}%</span>
@@ -103,43 +101,79 @@ const CustomTooltip = ({ active, payload, label }: {
   )
 }
 
-// ─── Main Chart — supply vs demand by hour ────────────────────────────────────
+// ─── Main Chart — demand (bars) vs partners on shift (line) ───────────────────
+
+// Contiguous hour ranges where active partners can't cover the demand.
+function underCoverage(data: ChartRow[]): string {
+  const flags = data.map((d) => d.supply * CAPACITY_PER_PARTNER_PER_HOUR < d.demand - 0.01)
+  const ranges: string[] = []
+  let i = 0
+  while (i < data.length) {
+    if (!flags[i]) { i++; continue }
+    let j = i
+    while (j + 1 < data.length && flags[j + 1]) j++
+    ranges.push(i === j ? data[i].hourLabel : `${data[i].hourLabel}–${data[j].hourLabel}`)
+    i = j + 1
+  }
+  return ranges.join(', ')
+}
 
 function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
   const peak = data.reduce((a, b) => (b.demand > a.demand ? b : a), data[0])
+  const thin = underCoverage(data)
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
+    <div className="bg-[#0d1b2a] rounded-xl border border-[#1e3a5f] shadow-sm p-4 md:p-6">
       <div className="mb-1">
-        <h2 className="text-base font-semibold text-gray-900">
-          Supply vs demand by hour — {label}
-        </h2>
-        <p className="text-xs text-gray-500 mt-1 leading-relaxed">
-          <span className="font-medium text-orange-500">Orange</span> = orders we expect (demand).{' '}
-          <span className="font-medium text-blue-500">Blue</span> = orders the partners on shift can serve (supply).
-          Wherever orange is taller than blue, demand outruns the team.
+        <h2 className="text-base font-semibold text-white">Supply vs demand by hour — {label}</h2>
+        <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+          <span className="font-medium text-orange-400">Bars</span> = orders expected each hour (demand).{' '}
+          <span className="font-medium text-indigo-400">Line</span> = partners active that hour (supply).
         </p>
       </div>
 
-      <p className="text-xs text-gray-400 mb-4">
-        Busiest at <span className="font-semibold text-gray-600">{peak?.hourLabel}</span>
-        {peak && ` (~${peak.demand.toFixed(0)} orders expected, ${Math.round(peak.coverage * 100)}% covered)`}
+      <p className="text-xs text-slate-500 mb-4">
+        {peak && <>Busiest at <span className="font-semibold text-slate-300">{peak.hourLabel}</span> (~{peak.demand.toFixed(0)} orders). </>}
+        {thin
+          ? <>Thin coverage around <span className="font-semibold text-slate-300">{thin}</span> — demand outruns the partners on shift.</>
+          : <>Partners keep pace with demand across the day.</>}
       </p>
 
-      <ResponsiveContainer width="100%" height={340}>
-        <ComposedChart data={data} margin={{ top: 10, right: 14, left: -4, bottom: 5 }} barGap={2}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
-          <XAxis dataKey="hourLabel" tick={{ fontSize: 11, fill: '#6b7280' }} tickLine={false} axisLine={{ stroke: '#e5e7eb' }} />
-          <YAxis
-            tick={{ fontSize: 11, fill: '#6b7280' }}
-            tickLine={false}
-            axisLine={false}
-            label={{ value: 'orders / hour', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#9ca3af', textAnchor: 'middle' } }}
+      <ResponsiveContainer width="100%" height={360}>
+        <ComposedChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 5 }}>
+          <defs>
+            <linearGradient id="supplyFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#818cf8" stopOpacity={0.35} />
+              <stop offset="100%" stopColor="#818cf8" stopOpacity={0.02} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" vertical={false} />
+          <XAxis
+            dataKey="hourLabel"
+            tick={{ fontSize: 11, fill: '#94a3b8' }}
+            tickLine={{ stroke: '#1e3a5f' }}
+            axisLine={{ stroke: '#334155' }}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.06)' }} />
-          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span className="text-gray-600">{v}</span>} />
-          <Bar dataKey="demand" name="Demand (orders expected)" fill="#fb923c" radius={[3, 3, 0, 0]} />
-          <Bar dataKey="supply" name="Supply (orders we can serve)" fill="#3b82f6" radius={[3, 3, 0, 0]} />
+          <YAxis
+            tick={{ fontSize: 11, fill: '#94a3b8' }}
+            tickLine={{ stroke: '#1e3a5f' }}
+            axisLine={{ stroke: '#334155' }}
+            allowDecimals={false}
+            label={{ value: 'orders/hr  ·  partners', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#64748b', textAnchor: 'middle' } }}
+          />
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.08)' }} />
+          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span style={{ color: '#94a3b8' }}>{v}</span>} />
+          <Bar dataKey="demand" name="Demand (orders/hr)" fill="#f59e0b" radius={[3, 3, 0, 0]} maxBarSize={34} />
+          <Area
+            dataKey="supply"
+            name="Supply (partners active)"
+            type="monotone"
+            stroke="#818cf8"
+            strokeWidth={2.5}
+            fill="url(#supplyFill)"
+            dot={{ r: 4, fill: '#0d1b2a', stroke: '#818cf8', strokeWidth: 2 }}
+            activeDot={{ r: 6, fill: '#818cf8' }}
+          />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
@@ -543,15 +577,15 @@ export default function ShiftPlanner() {
     const cells: DayHourMetrics[] = days.flatMap((day) => metrics.filter((m) => m.day === day))
     const cap = CAPACITY_PER_PARTNER_PER_HOUR
     const chartData: ChartRow[] = HOURS.map((hour) => {
-      let dem = 0, sup = 0
+      let dem = 0, part = 0
       for (const day of days) {
         const m = metrics.find((x) => x.day === day && x.hour === hour)
-        if (m) { dem += m.demand; sup += m.effective * cap }
+        if (m) { dem += m.demand; part += m.scheduled }
       }
       const n = days.length || 1
       const demand = dem / n
-      const supply = sup / n
-      const coverage = demand > 0 ? Math.min(supply, demand) / demand : 1
+      const supply = part / n // partners active on shift this hour
+      const coverage = demand > 0 ? Math.min(supply * cap, demand) / demand : 1
       return { hourLabel: formatHour(hour), demand, supply, coverage }
     })
     return { chartData, cells, numDays: days.length }

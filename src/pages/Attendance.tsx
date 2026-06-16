@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { RefreshCw, Check, X, Fingerprint, AlertTriangle, ShieldCheck } from 'lucide-react'
+import { RefreshCw, Check, Fingerprint, AlertTriangle, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   attendanceEnabled, getAttendance, upsertAttendance,
@@ -13,10 +13,10 @@ interface Partner { id: string; name: string; shift_start: number; shift_hours: 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 function pad(n: number) { return String(n).padStart(2, '0') }
 
-const STATUS_CONFIG: Record<'present' | 'absent' | 'leave', { label: string; cls: string }> = {
-  present: { label: 'Present', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
-  absent:  { label: 'Absent',  cls: 'bg-red-100 text-red-700 border-red-200' },
-  leave:   { label: 'Leave',   cls: 'bg-amber-100 text-amber-700 border-amber-200' },
+const STATUS_CONFIG: Record<AttendanceStatus, { label: string; cls: string }> = {
+  present:      { label: 'Present',      cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  weekly_off:   { label: 'Weekly Off',   cls: 'bg-sky-100 text-sky-700 border-sky-200' },
+  unpaid_leave: { label: 'Unpaid Leave', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
 }
 
 function checkinLabel(iso: string | null): string {
@@ -91,9 +91,9 @@ export default function Attendance() {
   const rec = (id: string): AttendanceRecord | undefined => records[id]
   const checkedIn = partners.filter((p) => rec(p.id)?.checkinAt).length
   const validated = partners.filter((p) => rec(p.id)?.validated).length
-  const present = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'present').length
-  const absent  = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'absent').length
-  const leave   = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'leave').length
+  const present    = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'present').length
+  const weeklyOff  = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'weekly_off').length
+  const unpaidLeave = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'unpaid_leave').length
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-5xl mx-auto">
@@ -106,7 +106,7 @@ export default function Attendance() {
 
       {/* Date + check-in trigger */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
-        <DateRangePicker value={range} onChange={setRange} />
+        <DateRangePicker value={range} onChange={setRange} hideModes={['last7']} singleCustom />
         {range.start !== range.end && (
           <p className="text-xs text-gray-400">Attendance is per-day — showing {niceDate(date)}.</p>
         )}
@@ -134,8 +134,8 @@ export default function Attendance() {
           { label: 'Scheduled', value: partners.length, cls: 'bg-indigo-50 text-indigo-700' },
           { label: 'Checked in', value: checkedIn, cls: 'bg-sky-50 text-sky-700' },
           { label: 'Present', value: present, cls: 'bg-emerald-50 text-emerald-700' },
-          { label: 'Absent', value: absent, cls: 'bg-red-50 text-red-700' },
-          { label: 'On Leave', value: leave, cls: 'bg-amber-50 text-amber-700' },
+          { label: 'Weekly Off', value: weeklyOff, cls: 'bg-sky-50 text-sky-700' },
+          { label: 'Unpaid Leave', value: unpaidLeave, cls: 'bg-amber-50 text-amber-700' },
           { label: 'Awaiting validation', value: partners.length - validated, cls: 'bg-gray-50 text-gray-600' },
         ].map((s) => (
           <div key={s.label} className={cn('px-4 py-2 rounded-xl text-sm font-medium', s.cls)}>
@@ -152,7 +152,7 @@ export default function Attendance() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 bg-gray-50">
-                  {['Partner', 'Shift', 'Check-in', 'Validate (P / A / L)', 'Notes', 'Status'].map((h) => (
+                  {['Partner', 'Shift', 'Check-in', 'Validate (P / WO / UL)', 'Notes', 'Status'].map((h) => (
                     <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -177,15 +177,15 @@ export default function Attendance() {
                       <td className="px-4 py-3">
                         <div className="flex gap-1.5">
                           <MarkBtn active={status === 'present'} color="emerald" onClick={() => validate(p.id, 'present')}><Check size={11} /> P</MarkBtn>
-                          <MarkBtn active={status === 'absent'} color="red" onClick={() => validate(p.id, 'absent')}><X size={11} /> A</MarkBtn>
-                          <MarkBtn active={status === 'leave'} color="amber" onClick={() => validate(p.id, 'leave')}>L</MarkBtn>
+                          <MarkBtn active={status === 'weekly_off'} color="sky" onClick={() => validate(p.id, 'weekly_off')}>WO</MarkBtn>
+                          <MarkBtn active={status === 'unpaid_leave'} color="amber" onClick={() => validate(p.id, 'unpaid_leave')}>UL</MarkBtn>
                         </div>
                       </td>
                       <td className="px-4 py-3 min-w-[180px]">
                         <input
                           type="text"
                           value={r?.notes ?? ''}
-                          placeholder={status === 'absent' || status === 'leave' ? 'Reason…' : 'Add a note'}
+                          placeholder={status === 'weekly_off' || status === 'unpaid_leave' ? 'Reason…' : 'Add a note'}
                           onChange={(e) => patchLocal(p.id, { notes: e.target.value })}
                           onBlur={(e) => persist(p.id, { notes: e.target.value })}
                           className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
@@ -216,14 +216,14 @@ export default function Attendance() {
 
 function MarkBtn({ active, color, onClick, children }: {
   active: boolean
-  color: 'emerald' | 'red' | 'amber'
+  color: 'emerald' | 'sky' | 'amber'
   onClick: () => void
   children: React.ReactNode
 }) {
   const activeCls = color === 'emerald' ? 'bg-emerald-500 text-white border-emerald-500'
-    : color === 'red' ? 'bg-red-500 text-white border-red-500'
+    : color === 'sky' ? 'bg-sky-500 text-white border-sky-500'
     : 'bg-amber-400 text-white border-amber-400'
-  const hover = color === 'emerald' ? 'hover:border-emerald-300' : color === 'red' ? 'hover:border-red-300' : 'hover:border-amber-300'
+  const hover = color === 'emerald' ? 'hover:border-emerald-300' : color === 'sky' ? 'hover:border-sky-300' : 'hover:border-amber-300'
   return (
     <button
       onClick={onClick}
