@@ -1,78 +1,142 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { RefreshCw, Calendar, Check, X } from 'lucide-react'
+import { RefreshCw, Check, X, Fingerprint, AlertTriangle, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  attendanceEnabled, getAttendance, upsertAttendance,
+  type AttendanceStatus, type AttendanceRecord,
+} from '@/lib/data'
+import { DateRangePicker, defaultRange, niceDate, type DateRange } from '@/components/DateRangePicker'
 
 interface Partner { id: string; name: string; shift_start: number; shift_hours: number; weekly_off: string }
-
-type AttendanceStatus = 'present' | 'absent' | 'leave' | null
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 function pad(n: number) { return String(n).padStart(2, '0') }
 
-const STATUS_CONFIG = {
+const STATUS_CONFIG: Record<'present' | 'absent' | 'leave', { label: string; cls: string }> = {
   present: { label: 'Present', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   absent:  { label: 'Absent',  cls: 'bg-red-100 text-red-700 border-red-200' },
   leave:   { label: 'Leave',   cls: 'bg-amber-100 text-amber-700 border-amber-200' },
 }
 
+function checkinLabel(iso: string | null): string {
+  if (!iso) return ''
+  const t = iso.includes('T') ? iso.split('T')[1] : iso
+  const [h, m] = t.split(':')
+  return `${pad(Number(h))}:${pad(Number(m))}`
+}
+
 export default function Attendance() {
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [range, setRange] = useState<DateRange>(() => defaultRange())
+  const date = range.start // attendance is per-day; use the range start
   const [partners, setPartners] = useState<Partner[]>([])
-  const [attendance, setAttendance] = useState<Record<string, AttendanceStatus>>({})
+  const [records, setRecords] = useState<Record<string, AttendanceRecord>>({})
+  const [enabled, setEnabled] = useState(true)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true)
-      const { data } = await supabase
-        .from('partners')
-        .select('id, name, shift_start, shift_hours, weekly_off')
-        .eq('status', 'Active')
-        .order('name')
-      const dow = DAY_NAMES[new Date(selectedDate + 'T00:00:00').getDay()]
-      const filtered = (data ?? []).filter((p) => p.weekly_off !== dow)
-      setPartners(filtered)
-      // Pre-fill off-day partners as absent
-      const init: Record<string, AttendanceStatus> = {}
-      for (const p of filtered) init[p.id] = null
-      setAttendance(init)
-      setLoading(false)
-    }
-    load()
-  }, [selectedDate])
+  const weekday = DAY_NAMES[new Date(date + 'T00:00:00').getDay()]
 
-  function mark(id: string, status: AttendanceStatus) {
-    setAttendance((prev) => ({ ...prev, [id]: status }))
+  const load = useCallback(async () => {
+    setLoading(true)
+    const [{ data }, ok, att] = await Promise.all([
+      supabase.from('partners').select('id, name, shift_start, shift_hours, weekly_off').eq('status', 'Active').order('name'),
+      attendanceEnabled(),
+      getAttendance(date),
+    ])
+    setEnabled(ok)
+    setRecords(att)
+    setPartners((data ?? []).filter((p) => p.weekly_off !== weekday))
+    setLoading(false)
+  }, [date, weekday])
+
+  useEffect(() => { load() }, [load])
+
+  function patchLocal(partnerId: string, patch: Partial<AttendanceRecord>) {
+    setRecords((prev) => {
+      const cur = prev[partnerId] ?? { partnerId, date, checkinAt: null, status: null, validated: false, notes: null }
+      return { ...prev, [partnerId]: { ...cur, ...patch } }
+    })
   }
 
-  const marked  = Object.values(attendance).filter(Boolean).length
-  const present = Object.values(attendance).filter((v) => v === 'present').length
-  const absent  = Object.values(attendance).filter((v) => v === 'absent').length
-  const leave   = Object.values(attendance).filter((v) => v === 'leave').length
+  async function persist(partnerId: string, patch: Partial<AttendanceRecord>) {
+    patchLocal(partnerId, patch)
+    if (!enabled) return
+    try {
+      await upsertAttendance({ partnerId, date, ...patch })
+    } catch {
+      setEnabled(false)
+    }
+  }
+
+  // Step 1 — simulate the beautician app check-ins (the daily tap-to-log-in).
+  function simulateCheckins() {
+    for (const p of partners) {
+      const rec = records[p.id]
+      if (rec?.checkinAt) continue
+      if (Math.random() < 0.82) {
+        const h = 6 + Math.floor(Math.random() * 3)
+        const m = Math.floor(Math.random() * 60)
+        const checkinAt = `${date}T${pad(h)}:${pad(m)}:00`
+        // first attendance signal: checked-in → tentatively present, not yet validated
+        persist(p.id, { checkinAt, status: 'present', validated: false })
+      }
+    }
+  }
+
+  // Step 2 — hub manager validates (marks the official status).
+  function validate(partnerId: string, status: AttendanceStatus) {
+    persist(partnerId, { status, validated: true })
+  }
+
+  const rec = (id: string): AttendanceRecord | undefined => records[id]
+  const checkedIn = partners.filter((p) => rec(p.id)?.checkinAt).length
+  const validated = partners.filter((p) => rec(p.id)?.validated).length
+  const present = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'present').length
+  const absent  = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'absent').length
+  const leave   = partners.filter((p) => rec(p.id)?.validated && rec(p.id)?.status === 'leave').length
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-5xl mx-auto">
-      {/* Date picker */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex flex-wrap gap-4 items-center">
-        <Calendar size={16} className="text-indigo-500" />
-        <label className="text-sm font-medium text-gray-700">Date:</label>
-        <input
-          type="date"
-          value={selectedDate}
-          onChange={(e) => setSelectedDate(e.target.value)}
-          className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-        />
+      <div>
+        <h1 className="text-lg font-bold text-gray-900">Attendance</h1>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Step 1 — beauticians check in from their app. Step 2 — hub manager validates &amp; logs the reason.
+        </p>
       </div>
+
+      {/* Date + check-in trigger */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3">
+        <DateRangePicker value={range} onChange={setRange} />
+        {range.start !== range.end && (
+          <p className="text-xs text-gray-400">Attendance is per-day — showing {niceDate(date)}.</p>
+        )}
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <button
+            onClick={simulateCheckins}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-orange-500 text-white text-xs font-semibold hover:bg-orange-600"
+          >
+            <Fingerprint size={14} /> Simulate app check-ins
+          </button>
+          <span className="text-xs text-gray-400">(stands in for the beauticians' tap-to-log-in until the app feed is wired)</span>
+        </div>
+      </div>
+
+      {!enabled && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>The <code className="font-mono">attendance</code> table isn't set up yet, so marks won't be saved. Run the migration SQL in Supabase to enable persistence — you can still mark locally for now.</span>
+        </div>
+      )}
 
       {/* Summary chips */}
       <div className="flex flex-wrap gap-3">
         {[
           { label: 'Scheduled', value: partners.length, cls: 'bg-indigo-50 text-indigo-700' },
-          { label: 'Present',   value: present,         cls: 'bg-emerald-50 text-emerald-700' },
-          { label: 'Absent',    value: absent,           cls: 'bg-red-50 text-red-700' },
-          { label: 'On Leave',  value: leave,            cls: 'bg-amber-50 text-amber-700' },
-          { label: 'Unmarked',  value: partners.length - marked, cls: 'bg-gray-50 text-gray-600' },
+          { label: 'Checked in', value: checkedIn, cls: 'bg-sky-50 text-sky-700' },
+          { label: 'Present', value: present, cls: 'bg-emerald-50 text-emerald-700' },
+          { label: 'Absent', value: absent, cls: 'bg-red-50 text-red-700' },
+          { label: 'On Leave', value: leave, cls: 'bg-amber-50 text-amber-700' },
+          { label: 'Awaiting validation', value: partners.length - validated, cls: 'bg-gray-50 text-gray-600' },
         ].map((s) => (
           <div key={s.label} className={cn('px-4 py-2 rounded-xl text-sm font-medium', s.cls)}>
             {s.label}: <span className="font-bold">{s.value}</span>
@@ -81,80 +145,92 @@ export default function Attendance() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center min-h-60">
-          <RefreshCw size={18} className="animate-spin text-indigo-500" />
-        </div>
+        <div className="flex items-center justify-center min-h-60"><RefreshCw size={18} className="animate-spin text-indigo-500" /></div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100 bg-gray-50">
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Partner</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide hidden sm:table-cell">Shift</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Mark</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {partners.map((p) => {
-                const status = attendance[p.id]
-                return (
-                  <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
-                    <td className="px-4 py-3 text-xs text-gray-500 hidden sm:table-cell">
-                      {pad(p.shift_start)}:00 – {pad(p.shift_start + p.shift_hours)}:00
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-1.5">
-                        <button
-                          onClick={() => mark(p.id, 'present')}
-                          className={cn('px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1',
-                            status === 'present' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white text-gray-600 border-gray-200 hover:border-emerald-300'
-                          )}
-                        >
-                          <Check size={11} /> P
-                        </button>
-                        <button
-                          onClick={() => mark(p.id, 'absent')}
-                          className={cn('px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1',
-                            status === 'absent' ? 'bg-red-500 text-white border-red-500' : 'bg-white text-gray-600 border-gray-200 hover:border-red-300'
-                          )}
-                        >
-                          <X size={11} /> A
-                        </button>
-                        <button
-                          onClick={() => mark(p.id, 'leave')}
-                          className={cn('px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors',
-                            status === 'leave' ? 'bg-amber-400 text-white border-amber-400' : 'bg-white text-gray-600 border-gray-200 hover:border-amber-300'
-                          )}
-                        >
-                          L
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      {status ? (
-                        <span className={cn('px-2 py-0.5 rounded-full text-xs font-medium border', STATUS_CONFIG[status].cls)}>
-                          {STATUS_CONFIG[status].label}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-300">—</span>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-          {marked > 0 && (
-            <div className="px-4 py-3 border-t border-gray-100 flex justify-end">
-              <button className="px-4 py-2 bg-orange-500 text-white text-sm font-medium rounded-lg hover:bg-orange-600">
-                Save attendance
-              </button>
-            </div>
-          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  {['Partner', 'Shift', 'Check-in', 'Validate (P / A / L)', 'Notes', 'Status'].map((h) => (
+                    <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {partners.map((p) => {
+                  const r = rec(p.id)
+                  const status = r?.validated ? r.status : null
+                  return (
+                    <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 align-top">
+                      <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{p.name}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{pad(p.shift_start)}:00 – {pad(p.shift_start + p.shift_hours)}:00</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {r?.checkinAt ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 text-xs font-medium">
+                            <Fingerprint size={11} /> {checkinLabel(r.checkinAt)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-300">not checked in</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1.5">
+                          <MarkBtn active={status === 'present'} color="emerald" onClick={() => validate(p.id, 'present')}><Check size={11} /> P</MarkBtn>
+                          <MarkBtn active={status === 'absent'} color="red" onClick={() => validate(p.id, 'absent')}><X size={11} /> A</MarkBtn>
+                          <MarkBtn active={status === 'leave'} color="amber" onClick={() => validate(p.id, 'leave')}>L</MarkBtn>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 min-w-[180px]">
+                        <input
+                          type="text"
+                          value={r?.notes ?? ''}
+                          placeholder={status === 'absent' || status === 'leave' ? 'Reason…' : 'Add a note'}
+                          onChange={(e) => patchLocal(p.id, { notes: e.target.value })}
+                          onBlur={(e) => persist(p.id, { notes: e.target.value })}
+                          className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {status ? (
+                          <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border', STATUS_CONFIG[status].cls)}>
+                            <ShieldCheck size={11} /> {STATUS_CONFIG[status].label}
+                          </span>
+                        ) : r?.checkinAt ? (
+                          <span className="text-xs text-sky-500">checked in · needs validation</span>
+                        ) : (
+                          <span className="text-xs text-gray-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
+  )
+}
+
+function MarkBtn({ active, color, onClick, children }: {
+  active: boolean
+  color: 'emerald' | 'red' | 'amber'
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  const activeCls = color === 'emerald' ? 'bg-emerald-500 text-white border-emerald-500'
+    : color === 'red' ? 'bg-red-500 text-white border-red-500'
+    : 'bg-amber-400 text-white border-amber-400'
+  const hover = color === 'emerald' ? 'hover:border-emerald-300' : color === 'red' ? 'hover:border-red-300' : 'hover:border-amber-300'
+  return (
+    <button
+      onClick={onClick}
+      className={cn('px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1',
+        active ? activeCls : `bg-white text-gray-600 border-gray-200 ${hover}`)}
+    >
+      {children}
+    </button>
   )
 }

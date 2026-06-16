@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 export type PageKey = 'shift-planner' | 'partner-hours' | 'assignment' | 'attendance' | 'partners'
 
 const navItems: { label: string; key: PageKey; icon: React.ElementType; sub: string }[] = [
-  { label: 'Shift Planner',  key: 'shift-planner',  icon: CalendarDays, sub: 'Supply vs demand analytics' },
+  { label: 'Shift Analyser', key: 'shift-planner',  icon: CalendarDays, sub: 'Hourly supply vs demand' },
   { label: 'Partner Hours',  key: 'partner-hours',  icon: Clock,        sub: 'Who works each hour by day' },
   { label: 'Assignment',     key: 'assignment',     icon: Calendar,     sub: 'Assign partners to orders' },
   { label: 'Attendance',     key: 'attendance',     icon: UserCheck,    sub: 'Daily attendance log' },

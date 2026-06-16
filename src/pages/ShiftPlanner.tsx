@@ -1,37 +1,59 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { AlertTriangle, TrendingUp, Clock, Users, RefreshCw, CheckCircle, Sparkles, ChevronDown } from 'lucide-react'
 import {
-  DAYS, HOURS,
+  DAYS, HOURS, CAPACITY_PER_PARTNER_PER_HOUR,
   getDayHourMetrics, getPartnerSlotOptions, addPartner,
   type DayHourMetrics, type PartnerSlotOption, type DayKey,
 } from '@/lib/data'
 import { formatHour, cn } from '@/lib/utils'
 import { showToast } from '@/components/ui/toast'
+import { DateRangePicker, defaultRange, weekdaysInRange, isFuture, type DateRange } from '@/components/DateRangePicker'
 
-type ViewKey = 'Week' | DayKey
+// ─── Summary cards (plain-language) ──────────────────────────────────────────
 
-// ─── KPI Row ──────────────────────────────────────────────────────────────────
+// Orders the current team can actually serve in a given day-hour cell.
+function ordersServed(m: DayHourMetrics): number {
+  return Math.min(m.demand, m.effective * CAPACITY_PER_PARTNER_PER_HOUR)
+}
 
-function KPIRow({ metrics }: { metrics: DayHourMetrics[] }) {
-  const deficitCells = metrics.filter((m) => m.deficit < 0)
-  const worst = metrics.reduce((min, m) => (m.deficit < min.deficit ? m : min), metrics[0] ?? { deficit: 0, day: 'Mon' as DayKey, hour: 8 })
-  const totalWeeklyDeficit = deficitCells.reduce((sum, m) => sum + Math.abs(m.deficit), 0)
+function SummaryRow({ cells, numDays }: { cells: DayHourMetrics[]; numDays: number }) {
+  let totalDemand = 0
+  let totalServed = 0
+  let peak = { hour: 12, demand: -1 }
+  let worstShort = { hour: 12, short: 0 }
+
+  for (const m of cells) {
+    totalDemand += m.demand
+    totalServed += ordersServed(m)
+    if (m.demand > peak.demand) peak = { hour: m.hour, demand: m.demand }
+    const short = m.required - m.effective
+    if (short > worstShort.short) worstShort = { hour: m.hour, short }
+  }
+
+  const coverage = totalDemand > 0 ? totalServed / totalDemand : 1
+  const perDayOrders = numDays > 0 ? totalDemand / numDays : totalDemand
+  const partnersShort = Math.ceil(worstShort.short)
+
+  const covColor = coverage >= 0.85 ? 'text-emerald-600' : coverage >= 0.6 ? 'text-amber-600' : 'text-red-600'
+  const covBorder = coverage >= 0.85 ? 'border-emerald-500' : coverage >= 0.6 ? 'border-amber-500' : 'border-red-500'
+
+  const cards = [
+    { label: 'Demand Coverage', value: `${(coverage * 100).toFixed(0)}%`, sub: 'of expected orders the team can serve', border: covBorder, valueCls: covColor, icon: <CheckCircle size={18} className={covColor} /> },
+    { label: 'Orders Expected', value: `${perDayOrders.toFixed(0)}`, sub: numDays > 1 ? 'avg orders / day in range' : 'orders this day', border: 'border-indigo-500', valueCls: 'text-gray-900', icon: <TrendingUp size={18} className="text-indigo-500" /> },
+    { label: 'Busiest Hour', value: formatHour(peak.hour), sub: 'peak order volume', border: 'border-orange-500', valueCls: 'text-gray-900', icon: <Clock size={18} className="text-orange-500" /> },
+    { label: 'Hiring Gap at Peak', value: `+${partnersShort}`, sub: `partners to fully cover ${formatHour(worstShort.hour)}`, border: 'border-red-500', valueCls: 'text-gray-900', icon: <Users size={18} className="text-red-500" /> },
+  ]
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-      {[
-        { label: 'Avg Daily Deficit Slots', value: (deficitCells.length / 7).toFixed(1), sub: 'slots/day below capacity', border: 'border-red-500', icon: <AlertTriangle size={18} className="text-red-500" /> },
-        { label: 'Worst Slot', value: `${worst?.day} ${formatHour(worst?.hour ?? 8)}`, sub: `${worst?.deficit?.toFixed(1)} partner deficit`, border: 'border-orange-500', icon: <Clock size={18} className="text-orange-500" /> },
-        { label: 'Total Weekly Deficit', value: Math.abs(totalWeeklyDeficit).toFixed(0), sub: 'partner-hours short across week', border: 'border-amber-500', icon: <TrendingUp size={18} className="text-amber-500" /> },
-        { label: 'Leave Buffer Applied', value: '20%', sub: 'effective = scheduled × 0.80', border: 'border-indigo-500', icon: <Users size={18} className="text-indigo-500" /> },
-      ].map((k) => (
+      {cards.map((k) => (
         <div key={k.label} className={cn('bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-5 border-l-4', k.border)}>
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">{k.label}</p>
             {k.icon}
           </div>
-          <p className="text-2xl font-bold text-gray-900">{k.value}</p>
+          <p className={cn('text-2xl font-bold', k.valueCls)}>{k.value}</p>
           <p className="text-xs text-gray-400 mt-1">{k.sub}</p>
         </div>
       ))}
@@ -39,129 +61,85 @@ function KPIRow({ metrics }: { metrics: DayHourMetrics[] }) {
   )
 }
 
-// ─── Day Selector (with Week option) ─────────────────────────────────────────
-
-function DaySelector({ selected, onSelect, metrics }: {
-  selected: ViewKey
-  onSelect: (v: ViewKey) => void
-  metrics: DayHourMetrics[]
-}) {
-  return (
-    <div className="flex gap-2 overflow-x-auto pb-1">
-      {/* Week pill */}
-      <button
-        onClick={() => onSelect('Week')}
-        className={cn(
-          'flex-shrink-0 px-4 py-2 rounded-full text-sm font-medium border transition-colors',
-          selected === 'Week'
-            ? 'bg-indigo-600 text-white border-indigo-600'
-            : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-        )}
-      >
-        Week ∑
-      </button>
-
-      {DAYS.map((day) => {
-        const isCritical = metrics.filter((m) => m.day === day).some((m) => m.deficit <= -10)
-        const hasDeficit  = metrics.filter((m) => m.day === day).some((m) => m.deficit < 0)
-        return (
-          <button
-            key={day}
-            onClick={() => onSelect(day)}
-            className={cn(
-              'flex-shrink-0 px-4 py-2 rounded-full text-sm font-medium border transition-colors',
-              selected === day
-                ? 'bg-indigo-600 text-white border-indigo-600'
-                : isCritical
-                  ? 'bg-white text-red-700 border-red-300 hover:border-red-400'
-                  : hasDeficit
-                    ? 'bg-white text-amber-700 border-amber-200 hover:border-amber-300'
-                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-            )}
-          >
-            {day}
-            {isCritical && selected !== day && (
-              <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-red-500 align-middle" />
-            )}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
 // ─── Tooltip ─────────────────────────────────────────────────────────────────
+
+interface ChartRow {
+  hourLabel: string
+  demand: number
+  supply: number
+  coverage: number
+}
 
 const CustomTooltip = ({ active, payload, label }: {
   active?: boolean
-  payload?: Array<{ name: string; value: number; payload?: Record<string, number> & { hourLabel: string } }>
+  payload?: Array<{ payload?: ChartRow }>
   label?: string
 }) => {
   if (!active || !payload || payload.length === 0) return null
-  const row = payload[0]?.payload as Record<string, number> & { hourLabel: string }
-  const deficit = (row.effective ?? 0) - (row.required ?? 0)
+  const row = payload[0]?.payload
+  if (!row) return null
+  const cov = Math.round((row.coverage ?? 0) * 100)
+  const covColor = cov >= 85 ? 'text-emerald-600' : cov >= 60 ? 'text-amber-600' : 'text-red-600'
+  const gap = row.demand - row.supply
+  const line = (k: string, v: string, cls = 'text-gray-800') => (
+    <div className="flex justify-between gap-6">
+      <span className="text-gray-500">{k}</span>
+      <span className={cn('font-medium', cls)}>{v}</span>
+    </div>
+  )
   return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs min-w-[160px]">
+    <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs min-w-[200px]">
       <p className="font-semibold text-gray-800 mb-2">{label}</p>
       <div className="space-y-1">
-        {[['Demand', row.demand], ['Required', row.required], ['Scheduled', row.scheduled], ['Effective', row.effective]].map(([k, v]) => (
-          <div key={k as string} className="flex justify-between gap-4">
-            <span className="text-gray-500">{k as string}</span>
-            <span className="font-medium">{typeof v === 'number' ? v.toFixed(1) : '—'}</span>
-          </div>
-        ))}
-        <div className={cn('flex justify-between gap-4 border-t border-gray-100 pt-1 mt-1 font-semibold', deficit < 0 ? 'text-red-600' : 'text-emerald-600')}>
-          <span>Deficit</span>
-          <span>{deficit.toFixed(1)}</span>
+        {line('Demand (orders)', row.demand.toFixed(1), 'text-orange-600')}
+        {line('Supply (orders)', row.supply.toFixed(1), 'text-blue-600')}
+        {line(gap > 0 ? 'Short by' : 'Surplus', Math.abs(gap).toFixed(1), gap > 0 ? 'text-red-600' : 'text-emerald-600')}
+        <div className="flex justify-between gap-6 border-t border-gray-100 pt-1 mt-1 font-semibold">
+          <span className="text-gray-600">Coverage</span>
+          <span className={covColor}>{cov}%</span>
         </div>
       </div>
     </div>
   )
 }
 
-// ─── Main Chart ───────────────────────────────────────────────────────────────
+// ─── Main Chart — supply vs demand by hour ────────────────────────────────────
 
-function MainChart({ view, metrics }: { view: ViewKey; metrics: DayHourMetrics[] }) {
-  const isWeek = view === 'Week'
-
-  const chartData = HOURS.map((hour) => {
-    if (isWeek) {
-      const cells = metrics.filter((m) => m.hour === hour)
-      const n = cells.length || 1
-      return {
-        hourLabel: formatHour(hour),
-        demand:    cells.reduce((s, m) => s + m.demand, 0) / n,
-        required:  cells.reduce((s, m) => s + m.required, 0) / n,
-        scheduled: cells.reduce((s, m) => s + m.scheduled, 0) / n,
-        effective: cells.reduce((s, m) => s + m.effective, 0) / n,
-      }
-    }
-    const m = metrics.find((m) => m.day === view && m.hour === hour)
-    return { hourLabel: formatHour(hour), demand: m?.demand ?? 0, required: m?.required ?? 0, scheduled: m?.scheduled ?? 0, effective: m?.effective ?? 0 }
-  })
+function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
+  const peak = data.reduce((a, b) => (b.demand > a.demand ? b : a), data[0])
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
-      <div className="mb-4">
+      <div className="mb-1">
         <h2 className="text-base font-semibold text-gray-900">
-          Required vs Available Capacity — {isWeek ? 'Weekly Average' : view}
+          Supply vs demand by hour — {label}
         </h2>
-        <p className="text-xs text-gray-500 mt-1">
-          <span className="font-medium">Required</span> = Demand × 2 ·{' '}
-          <span className="font-medium">Effective</span> = Scheduled × 0.80 (20% leave buffer)
-          {isWeek && ' · Values are averaged across all 7 days'}
+        <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+          <span className="font-medium text-orange-500">Orange</span> = orders we expect (demand).{' '}
+          <span className="font-medium text-blue-500">Blue</span> = orders the partners on shift can serve (supply).
+          Wherever orange is taller than blue, demand outruns the team.
         </p>
       </div>
-      <ResponsiveContainer width="100%" height={300}>
-        <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-          <XAxis dataKey="hourLabel" tick={{ fontSize: 11 }} />
-          <YAxis tick={{ fontSize: 11 }} />
-          <Tooltip content={<CustomTooltip />} />
-          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} formatter={(v) => <span className="text-gray-600">{v}</span>} />
-          <Bar dataKey="required" name="Required" fill="#fecaca" radius={[3, 3, 0, 0]} />
-          <Bar dataKey="effective" name="Effective" fill="#818cf8" radius={[3, 3, 0, 0]} />
-          <Line dataKey="scheduled" name="Scheduled" stroke="#9ca3af" strokeDasharray="5 5" strokeWidth={1.5} dot={false} type="monotone" />
+
+      <p className="text-xs text-gray-400 mb-4">
+        Busiest at <span className="font-semibold text-gray-600">{peak?.hourLabel}</span>
+        {peak && ` (~${peak.demand.toFixed(0)} orders expected, ${Math.round(peak.coverage * 100)}% covered)`}
+      </p>
+
+      <ResponsiveContainer width="100%" height={340}>
+        <ComposedChart data={data} margin={{ top: 10, right: 14, left: -4, bottom: 5 }} barGap={2}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
+          <XAxis dataKey="hourLabel" tick={{ fontSize: 11, fill: '#6b7280' }} tickLine={false} axisLine={{ stroke: '#e5e7eb' }} />
+          <YAxis
+            tick={{ fontSize: 11, fill: '#6b7280' }}
+            tickLine={false}
+            axisLine={false}
+            label={{ value: 'orders / hour', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#9ca3af', textAnchor: 'middle' } }}
+          />
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.06)' }} />
+          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span className="text-gray-600">{v}</span>} />
+          <Bar dataKey="demand" name="Demand (orders expected)" fill="#fb923c" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="supply" name="Supply (orders we can serve)" fill="#3b82f6" radius={[3, 3, 0, 0]} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
@@ -540,39 +518,11 @@ function AddPartnerForm({ prefill, onSuccess }: {
   )
 }
 
-// ─── Insights Panel ───────────────────────────────────────────────────────────
-
-function InsightsPanel({ metrics }: { metrics: DayHourMetrics[] }) {
-  const worst = metrics.reduce((min, m) => (m.deficit < min.deficit ? m : min), metrics[0] ?? { deficit: 0, day: 'Mon' as DayKey, hour: 8 })
-  const understaffed = metrics.filter((m) => m.deficit < 0).length
-  const avgDeficit = understaffed > 0 ? metrics.filter((m) => m.deficit < 0).reduce((s, m) => s + m.deficit, 0) / understaffed : 0
-  const partnerHoursNeeded = metrics.filter((m) => m.deficit < 0).reduce((s, m) => s + Math.abs(m.deficit), 0)
-
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
-      <h2 className="text-base font-semibold text-gray-900 mb-4">Insights</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {[
-          { icon: <AlertTriangle size={16} className="text-red-500" />, title: 'Critical Slot', body: `${worst.day} ${formatHour(worst.hour)} is the hardest slot — deficit of ${worst.deficit.toFixed(1)} partners.`, bg: 'bg-red-50 border-red-100' },
-          { icon: <Users size={16} className="text-amber-500" />, title: 'Coverage Gap', body: `${understaffed} of 91 slots (${((understaffed / 91) * 100).toFixed(0)}%) are understaffed across the week.`, bg: 'bg-amber-50 border-amber-100' },
-          { icon: <TrendingUp size={16} className="text-indigo-500" />, title: 'Average Deficit', body: `Understaffed slots average a ${Math.abs(avgDeficit).toFixed(1)}-partner gap. Sun and Fri are most affected.`, bg: 'bg-indigo-50 border-indigo-100' },
-          { icon: <Clock size={16} className="text-emerald-500" />, title: 'Hiring Target', body: `${partnerHoursNeeded.toFixed(0)} partner-hours/week needed to close all gaps (assume 10h avg shifts).`, bg: 'bg-emerald-50 border-emerald-100' },
-        ].map((insight) => (
-          <div key={insight.title} className={cn('rounded-xl border p-4', insight.bg)}>
-            <div className="flex items-center gap-2 mb-1.5">{insight.icon}<p className="text-sm font-semibold text-gray-800">{insight.title}</p></div>
-            <p className="text-xs text-gray-600 leading-relaxed">{insight.body}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function ShiftPlanner() {
   const [metrics, setMetrics] = useState<DayHourMetrics[]>([])
-  const [view, setView] = useState<ViewKey>('Sun')
+  const [range, setRange] = useState<DateRange>(() => defaultRange())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [prefill, setPrefill] = useState<Partial<{ shiftHours: 8|10|12; shiftStart: number; weeklyOff: DayKey }>>({})
@@ -586,6 +536,26 @@ export default function ShiftPlanner() {
   }, [])
 
   useEffect(() => { loadMetrics() }, [loadMetrics])
+
+  // Map the selected date range onto the day-of-week demand model and average it.
+  const { chartData, cells, numDays } = useMemo(() => {
+    const days = weekdaysInRange(range)
+    const cells: DayHourMetrics[] = days.flatMap((day) => metrics.filter((m) => m.day === day))
+    const cap = CAPACITY_PER_PARTNER_PER_HOUR
+    const chartData: ChartRow[] = HOURS.map((hour) => {
+      let dem = 0, sup = 0
+      for (const day of days) {
+        const m = metrics.find((x) => x.day === day && x.hour === hour)
+        if (m) { dem += m.demand; sup += m.effective * cap }
+      }
+      const n = days.length || 1
+      const demand = dem / n
+      const supply = sup / n
+      const coverage = demand > 0 ? Math.min(supply, demand) / demand : 1
+      return { hourLabel: formatHour(hour), demand, supply, coverage }
+    })
+    return { chartData, cells, numDays: days.length }
+  }, [metrics, range])
 
   function handleSlotSelect(opt: PartnerSlotOption) {
     setPrefill({ shiftHours: opt.shiftHours, shiftStart: opt.startTime, weeklyOff: opt.weeklyOff as DayKey })
@@ -614,23 +584,27 @@ export default function ShiftPlanner() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
-      <KPIRow metrics={metrics} />
+      <SummaryRow cells={cells} numDays={numDays} />
 
-      {/* Day / Week selector */}
+      {/* Date-range selector */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-        <p className="text-xs font-medium text-gray-500 mb-3 uppercase tracking-wide">View</p>
-        <DaySelector selected={view} onSelect={setView} metrics={metrics} />
+        <p className="text-xs font-medium text-gray-500 mb-3 uppercase tracking-wide">Showing</p>
+        <DateRangePicker value={range} onChange={setRange} />
+        {isFuture(range) && (
+          <p className="text-xs text-amber-600 mt-3 flex items-center gap-1.5">
+            <AlertTriangle size={13} />
+            Future date — showing a forecast from historical demand. Live orders will replace this once real-time data is connected.
+          </p>
+        )}
       </div>
 
-      <MainChart view={view} metrics={metrics} />
+      <MainChart data={chartData} label={range.label} />
 
       <PartnerSlotPlanner onSelect={handleSlotSelect} />
 
       <div ref={addFormRef}>
         <AddPartnerForm prefill={prefill} onSuccess={loadMetrics} />
       </div>
-
-      <InsightsPanel metrics={metrics} />
     </div>
   )
 }
