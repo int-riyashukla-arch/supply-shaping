@@ -20,12 +20,14 @@ function ordersServed(m: DayHourMetrics): number {
 function SummaryRow({ cells, numDays }: { cells: DayHourMetrics[]; numDays: number }) {
   let totalDemand = 0
   let totalServed = 0
+  let totalPartnerHours = 0
   let peak = { hour: 12, demand: -1 }
   let worstShort = { hour: 12, short: 0 }
 
   for (const m of cells) {
     totalDemand += m.demand
     totalServed += ordersServed(m)
+    totalPartnerHours += m.effective
     if (m.demand > peak.demand) peak = { hour: m.hour, demand: m.demand }
     const short = m.required - m.effective
     if (short > worstShort.short) worstShort = { hour: m.hour, short }
@@ -33,16 +35,17 @@ function SummaryRow({ cells, numDays }: { cells: DayHourMetrics[]; numDays: numb
 
   const coverage = totalDemand > 0 ? totalServed / totalDemand : 1
   const perDayOrders = numDays > 0 ? totalDemand / numDays : totalDemand
-  const partnersShort = Math.ceil(worstShort.short)
+  const perDayPartnerHours = numDays > 0 ? totalPartnerHours / numDays : totalPartnerHours
+  const uncovered = Math.round((totalDemand - totalServed) / (numDays || 1))
 
   const covColor = coverage >= 0.85 ? 'text-emerald-600' : coverage >= 0.6 ? 'text-amber-600' : 'text-red-600'
   const covBorder = coverage >= 0.85 ? 'border-emerald-500' : coverage >= 0.6 ? 'border-amber-500' : 'border-red-500'
 
   const cards = [
+    { label: 'Total Demand', value: `${perDayOrders.toFixed(0)}`, sub: numDays > 1 ? 'avg orders / day in range' : 'orders expected today', border: 'border-indigo-500', valueCls: 'text-gray-900', icon: <TrendingUp size={18} className="text-indigo-500" /> },
+    { label: 'Total Supply', value: `${perDayPartnerHours.toFixed(0)} hrs`, sub: numDays > 1 ? 'avg partner-hours / day' : 'partner-hours on shift today', border: 'border-emerald-500', valueCls: 'text-gray-900', icon: <Users size={18} className="text-emerald-500" /> },
     { label: 'Demand Coverage', value: `${(coverage * 100).toFixed(0)}%`, sub: 'of expected orders the team can serve', border: covBorder, valueCls: covColor, icon: <CheckCircle size={18} className={covColor} /> },
-    { label: 'Orders Expected', value: `${perDayOrders.toFixed(0)}`, sub: numDays > 1 ? 'avg orders / day in range' : 'orders this day', border: 'border-indigo-500', valueCls: 'text-gray-900', icon: <TrendingUp size={18} className="text-indigo-500" /> },
-    { label: 'Busiest Hour', value: formatHour(peak.hour), sub: 'peak order volume', border: 'border-orange-500', valueCls: 'text-gray-900', icon: <Clock size={18} className="text-orange-500" /> },
-    { label: 'Hiring Gap at Peak', value: `+${partnersShort}`, sub: `partners to fully cover ${formatHour(worstShort.hour)}`, border: 'border-red-500', valueCls: 'text-gray-900', icon: <Users size={18} className="text-red-500" /> },
+    { label: 'Unmet Orders / Day', value: `${uncovered}`, sub: `orders demand outpaces supply · peak at ${formatHour(peak.hour)}`, border: 'border-orange-500', valueCls: uncovered > 0 ? 'text-orange-600' : 'text-emerald-600', icon: <Clock size={18} className="text-orange-500" /> },
   ]
 
   return (
@@ -123,19 +126,19 @@ function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
   const thin = underCoverage(data)
 
   return (
-    <div className="bg-[#0d1b2a] rounded-xl border border-[#1e3a5f] shadow-sm p-4 md:p-6">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
       <div className="mb-1">
-        <h2 className="text-base font-semibold text-white">Supply vs demand by hour — {label}</h2>
-        <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-          <span className="font-medium text-orange-400">Bars</span> = orders expected each hour (demand).{' '}
-          <span className="font-medium text-indigo-400">Line</span> = partners active that hour (supply).
+        <h2 className="text-base font-semibold text-gray-900">Supply vs demand by hour — {label}</h2>
+        <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+          <span className="font-medium text-orange-500">Bars</span> = orders expected each hour (demand).{' '}
+          <span className="font-medium text-indigo-500">Line</span> = partners active that hour (supply).
         </p>
       </div>
 
-      <p className="text-xs text-slate-500 mb-4">
-        {peak && <>Busiest at <span className="font-semibold text-slate-300">{peak.hourLabel}</span> (~{peak.demand.toFixed(0)} orders). </>}
+      <p className="text-xs text-gray-400 mb-4">
+        {peak && <>Busiest at <span className="font-semibold text-gray-600">{peak.hourLabel}</span> (~{peak.demand.toFixed(0)} orders). </>}
         {thin
-          ? <>Thin coverage around <span className="font-semibold text-slate-300">{thin}</span> — demand outruns the partners on shift.</>
+          ? <>Thin coverage around <span className="font-semibold text-gray-600">{thin}</span> — demand outruns the partners on shift.</>
           : <>Partners keep pace with demand across the day.</>}
       </p>
 
@@ -143,36 +146,36 @@ function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
         <ComposedChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 5 }}>
           <defs>
             <linearGradient id="supplyFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#818cf8" stopOpacity={0.35} />
-              <stop offset="100%" stopColor="#818cf8" stopOpacity={0.02} />
+              <stop offset="0%" stopColor="#6366f1" stopOpacity={0.25} />
+              <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
           <XAxis
             dataKey="hourLabel"
-            tick={{ fontSize: 11, fill: '#94a3b8' }}
-            tickLine={{ stroke: '#1e3a5f' }}
-            axisLine={{ stroke: '#334155' }}
+            tick={{ fontSize: 11, fill: '#64748b' }}
+            tickLine={{ stroke: '#cbd5e1' }}
+            axisLine={{ stroke: '#94a3b8' }}
           />
           <YAxis
-            tick={{ fontSize: 11, fill: '#94a3b8' }}
-            tickLine={{ stroke: '#1e3a5f' }}
-            axisLine={{ stroke: '#334155' }}
+            tick={{ fontSize: 11, fill: '#64748b' }}
+            tickLine={{ stroke: '#cbd5e1' }}
+            axisLine={{ stroke: '#94a3b8' }}
             allowDecimals={false}
-            label={{ value: 'orders/hr  ·  partners', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#64748b', textAnchor: 'middle' } }}
+            label={{ value: 'orders/hr  ·  partners', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#94a3b8', textAnchor: 'middle' } }}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.08)' }} />
-          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span style={{ color: '#94a3b8' }}>{v}</span>} />
-          <Bar dataKey="demand" name="Demand (orders/hr)" fill="#f59e0b" radius={[3, 3, 0, 0]} maxBarSize={34} />
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.06)' }} />
+          <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span className="text-gray-600">{v}</span>} />
+          <Bar dataKey="demand" name="Demand (orders/hr)" fill="#fb923c" radius={[3, 3, 0, 0]} maxBarSize={34} />
           <Area
             dataKey="supply"
             name="Supply (partners active)"
             type="monotone"
-            stroke="#818cf8"
+            stroke="#6366f1"
             strokeWidth={2.5}
             fill="url(#supplyFill)"
-            dot={{ r: 4, fill: '#0d1b2a', stroke: '#818cf8', strokeWidth: 2 }}
-            activeDot={{ r: 6, fill: '#818cf8' }}
+            dot={{ r: 4, fill: '#ffffff', stroke: '#6366f1', strokeWidth: 2 }}
+            activeDot={{ r: 6, fill: '#6366f1' }}
           />
         </ComposedChart>
       </ResponsiveContainer>
