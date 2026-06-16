@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { ComposedChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { AlertTriangle, TrendingUp, Clock, Users, RefreshCw, CheckCircle, Sparkles, ChevronDown } from 'lucide-react'
 import {
   DAYS, HOURS, CAPACITY_PER_PARTNER_PER_HOUR,
@@ -8,54 +8,41 @@ import {
 } from '@/lib/data'
 import { formatHour, cn } from '@/lib/utils'
 import { showToast } from '@/components/ui/toast'
-
-type ViewKey = 'Week' | DayKey
+import { DateRangePicker, defaultRange, weekdaysInRange, isFuture, type DateRange } from '@/components/DateRangePicker'
 
 // ─── Summary cards (plain-language) ──────────────────────────────────────────
-
-const DAY_FULL: Record<string, string> = {
-  Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday',
-  Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday',
-}
 
 // Orders the current team can actually serve in a given day-hour cell.
 function ordersServed(m: DayHourMetrics): number {
   return Math.min(m.demand, m.effective * CAPACITY_PER_PARTNER_PER_HOUR)
 }
 
-function SummaryRow({ metrics }: { metrics: DayHourMetrics[] }) {
+function SummaryRow({ cells, numDays }: { cells: DayHourMetrics[]; numDays: number }) {
   let totalDemand = 0
   let totalServed = 0
-  const perDay: Record<string, { dem: number; served: number }> = {}
-  let peak = { day: 'Mon' as DayKey, hour: 12, demand: -1 }
-  let worstShort = { day: 'Mon' as DayKey, hour: 12, short: 0 }
+  let peak = { hour: 12, demand: -1 }
+  let worstShort = { hour: 12, short: 0 }
 
-  for (const m of metrics) {
-    const served = ordersServed(m)
+  for (const m of cells) {
     totalDemand += m.demand
-    totalServed += served
-    perDay[m.day] ??= { dem: 0, served: 0 }
-    perDay[m.day].dem += m.demand
-    perDay[m.day].served += served
-    if (m.demand > peak.demand) peak = { day: m.day, hour: m.hour, demand: m.demand }
+    totalServed += ordersServed(m)
+    if (m.demand > peak.demand) peak = { hour: m.hour, demand: m.demand }
     const short = m.required - m.effective
-    if (short > worstShort.short) worstShort = { day: m.day, hour: m.hour, short }
+    if (short > worstShort.short) worstShort = { hour: m.hour, short }
   }
 
   const coverage = totalDemand > 0 ? totalServed / totalDemand : 1
-  const toughest = Object.entries(perDay)
-    .map(([day, v]) => ({ day, cov: v.dem > 0 ? v.served / v.dem : 1 }))
-    .sort((a, b) => a.cov - b.cov)[0] ?? { day: 'Sun', cov: 0 }
+  const perDayOrders = numDays > 0 ? totalDemand / numDays : totalDemand
   const partnersShort = Math.ceil(worstShort.short)
 
   const covColor = coverage >= 0.85 ? 'text-emerald-600' : coverage >= 0.6 ? 'text-amber-600' : 'text-red-600'
   const covBorder = coverage >= 0.85 ? 'border-emerald-500' : coverage >= 0.6 ? 'border-amber-500' : 'border-red-500'
 
   const cards = [
-    { label: 'Demand Coverage', value: `${(coverage * 100).toFixed(0)}%`, sub: 'of weekly orders the team can serve', border: covBorder, valueCls: covColor, icon: <CheckCircle size={18} className={covColor} /> },
-    { label: 'Busiest Window', value: `${peak.day} ${formatHour(peak.hour)}`, sub: 'highest order volume of the week', border: 'border-indigo-500', valueCls: 'text-gray-900', icon: <TrendingUp size={18} className="text-indigo-500" /> },
-    { label: 'Hardest Day', value: DAY_FULL[toughest.day] ?? toughest.day, sub: `only ${(toughest.cov * 100).toFixed(0)}% of its demand covered`, border: 'border-orange-500', valueCls: 'text-gray-900', icon: <Clock size={18} className="text-orange-500" /> },
-    { label: 'Hiring Gap at Peak', value: `+${partnersShort}`, sub: `partners to fully cover ${worstShort.day} ${formatHour(worstShort.hour)}`, border: 'border-red-500', valueCls: 'text-gray-900', icon: <Users size={18} className="text-red-500" /> },
+    { label: 'Demand Coverage', value: `${(coverage * 100).toFixed(0)}%`, sub: 'of expected orders the team can serve', border: covBorder, valueCls: covColor, icon: <CheckCircle size={18} className={covColor} /> },
+    { label: 'Orders Expected', value: `${perDayOrders.toFixed(0)}`, sub: numDays > 1 ? 'avg orders / day in range' : 'orders this day', border: 'border-indigo-500', valueCls: 'text-gray-900', icon: <TrendingUp size={18} className="text-indigo-500" /> },
+    { label: 'Busiest Hour', value: formatHour(peak.hour), sub: 'peak order volume', border: 'border-orange-500', valueCls: 'text-gray-900', icon: <Clock size={18} className="text-orange-500" /> },
+    { label: 'Hiring Gap at Peak', value: `+${partnersShort}`, sub: `partners to fully cover ${formatHour(worstShort.hour)}`, border: 'border-red-500', valueCls: 'text-gray-900', icon: <Users size={18} className="text-red-500" /> },
   ]
 
   return (
@@ -74,65 +61,12 @@ function SummaryRow({ metrics }: { metrics: DayHourMetrics[] }) {
   )
 }
 
-// ─── Day Selector (with Week option) ─────────────────────────────────────────
-
-function DaySelector({ selected, onSelect, metrics }: {
-  selected: ViewKey
-  onSelect: (v: ViewKey) => void
-  metrics: DayHourMetrics[]
-}) {
-  return (
-    <div className="flex gap-2 overflow-x-auto pb-1">
-      {/* Week pill */}
-      <button
-        onClick={() => onSelect('Week')}
-        className={cn(
-          'flex-shrink-0 px-4 py-2 rounded-full text-sm font-medium border transition-colors',
-          selected === 'Week'
-            ? 'bg-indigo-600 text-white border-indigo-600'
-            : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-        )}
-      >
-        Week ∑
-      </button>
-
-      {DAYS.map((day) => {
-        const isCritical = metrics.filter((m) => m.day === day).some((m) => m.deficit <= -10)
-        const hasDeficit  = metrics.filter((m) => m.day === day).some((m) => m.deficit < 0)
-        return (
-          <button
-            key={day}
-            onClick={() => onSelect(day)}
-            className={cn(
-              'flex-shrink-0 px-4 py-2 rounded-full text-sm font-medium border transition-colors',
-              selected === day
-                ? 'bg-indigo-600 text-white border-indigo-600'
-                : isCritical
-                  ? 'bg-white text-red-700 border-red-300 hover:border-red-400'
-                  : hasDeficit
-                    ? 'bg-white text-amber-700 border-amber-200 hover:border-amber-300'
-                    : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-            )}
-          >
-            {day}
-            {isCritical && selected !== day && (
-              <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-red-500 align-middle" />
-            )}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
 // ─── Tooltip ─────────────────────────────────────────────────────────────────
 
 interface ChartRow {
   hourLabel: string
-  expected: number
-  served: number
-  unmet: number
-  partnersOn: number
+  demand: number
+  supply: number
   coverage: number
 }
 
@@ -146,6 +80,7 @@ const CustomTooltip = ({ active, payload, label }: {
   if (!row) return null
   const cov = Math.round((row.coverage ?? 0) * 100)
   const covColor = cov >= 85 ? 'text-emerald-600' : cov >= 60 ? 'text-amber-600' : 'text-red-600'
+  const gap = row.demand - row.supply
   const line = (k: string, v: string, cls = 'text-gray-800') => (
     <div className="flex justify-between gap-6">
       <span className="text-gray-500">{k}</span>
@@ -156,10 +91,9 @@ const CustomTooltip = ({ active, payload, label }: {
     <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs min-w-[200px]">
       <p className="font-semibold text-gray-800 mb-2">{label}</p>
       <div className="space-y-1">
-        {line('Orders expected', row.expected.toFixed(1))}
-        {line('Can serve', row.served.toFixed(1), 'text-emerald-600')}
-        {line('Will miss', row.unmet.toFixed(1), 'text-red-600')}
-        {line('Partners on shift', String(Math.round(row.partnersOn)))}
+        {line('Demand (orders)', row.demand.toFixed(1), 'text-orange-600')}
+        {line('Supply (orders)', row.supply.toFixed(1), 'text-blue-600')}
+        {line(gap > 0 ? 'Short by' : 'Surplus', Math.abs(gap).toFixed(1), gap > 0 ? 'text-red-600' : 'text-emerald-600')}
         <div className="flex justify-between gap-6 border-t border-gray-100 pt-1 mt-1 font-semibold">
           <span className="text-gray-600">Coverage</span>
           <span className={covColor}>{cov}%</span>
@@ -169,74 +103,43 @@ const CustomTooltip = ({ active, payload, label }: {
   )
 }
 
-// ─── Main Chart ───────────────────────────────────────────────────────────────
+// ─── Main Chart — supply vs demand by hour ────────────────────────────────────
 
-function MainChart({ view, metrics }: { view: ViewKey; metrics: DayHourMetrics[] }) {
-  const isWeek = view === 'Week'
-  const cap = CAPACITY_PER_PARTNER_PER_HOUR
-
-  const chartData: ChartRow[] = HOURS.map((hour) => {
-    const cells = isWeek
-      ? metrics.filter((m) => m.hour === hour)
-      : metrics.filter((m) => m.day === view && m.hour === hour)
-    const n = cells.length || 1
-    const expected   = cells.reduce((s, m) => s + m.demand, 0) / n
-    const effective  = cells.reduce((s, m) => s + m.effective, 0) / n
-    const partnersOn = cells.reduce((s, m) => s + m.scheduled, 0) / n
-    const capacity = effective * cap
-    const served = Math.min(expected, capacity)
-    const unmet = Math.max(0, expected - capacity)
-    const coverage = expected > 0 ? served / expected : 1
-    return { hourLabel: formatHour(hour), expected, served, unmet, partnersOn, coverage }
-  })
-
-  const peak = chartData.reduce((a, b) => (b.expected > a.expected ? b : a), chartData[0])
+function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
+  const peak = data.reduce((a, b) => (b.demand > a.demand ? b : a), data[0])
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
       <div className="mb-1">
         <h2 className="text-base font-semibold text-gray-900">
-          Can we keep up with demand? — {isWeek ? 'Average day' : DAY_FULL[view] ?? view}
+          Supply vs demand by hour — {label}
         </h2>
         <p className="text-xs text-gray-500 mt-1 leading-relaxed">
-          Each bar is the <span className="font-medium text-gray-700">orders expected</span> that hour.{' '}
-          <span className="font-medium text-emerald-600">Green</span> = what the team on shift can serve,{' '}
-          <span className="font-medium text-red-500">red</span> = orders we'd miss. The{' '}
-          <span className="font-medium text-indigo-600">line</span> is how many partners are working.
-          {isWeek && ' Averaged across all 7 days — pick a day above to drill in.'}
+          <span className="font-medium text-orange-500">Orange</span> = orders we expect (demand).{' '}
+          <span className="font-medium text-blue-500">Blue</span> = orders the partners on shift can serve (supply).
+          Wherever orange is taller than blue, demand outruns the team.
         </p>
       </div>
 
-      {/* Plain-English headline for this view */}
       <p className="text-xs text-gray-400 mb-4">
         Busiest at <span className="font-semibold text-gray-600">{peak?.hourLabel}</span>
-        {peak && ` (~${peak.expected.toFixed(0)} orders, ${Math.round(peak.coverage * 100)}% covered)`}
+        {peak && ` (~${peak.demand.toFixed(0)} orders expected, ${Math.round(peak.coverage * 100)}% covered)`}
       </p>
 
       <ResponsiveContainer width="100%" height={340}>
-        <ComposedChart data={chartData} margin={{ top: 10, right: 14, left: -4, bottom: 5 }}>
+        <ComposedChart data={data} margin={{ top: 10, right: 14, left: -4, bottom: 5 }} barGap={2}>
           <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
           <XAxis dataKey="hourLabel" tick={{ fontSize: 11, fill: '#6b7280' }} tickLine={false} axisLine={{ stroke: '#e5e7eb' }} />
           <YAxis
-            yAxisId="orders"
             tick={{ fontSize: 11, fill: '#6b7280' }}
             tickLine={false}
             axisLine={false}
             label={{ value: 'orders / hour', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#9ca3af', textAnchor: 'middle' } }}
           />
-          <YAxis
-            yAxisId="partners"
-            orientation="right"
-            tick={{ fontSize: 11, fill: '#a5b4fc' }}
-            tickLine={false}
-            axisLine={false}
-            label={{ value: 'partners on shift', angle: 90, position: 'insideRight', style: { fontSize: 11, fill: '#a5b4fc', textAnchor: 'middle' } }}
-          />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(99,102,241,0.05)' }} />
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.06)' }} />
           <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span className="text-gray-600">{v}</span>} />
-          <Bar yAxisId="orders" dataKey="served" name="Orders we can serve" stackId="demand" fill="#34d399" />
-          <Bar yAxisId="orders" dataKey="unmet" name="Unmet demand" stackId="demand" fill="#f87171" radius={[3, 3, 0, 0]} />
-          <Line yAxisId="partners" dataKey="partnersOn" name="Partners on shift" stroke="#6366f1" strokeWidth={2} dot={{ r: 2, fill: '#6366f1' }} type="monotone" />
+          <Bar dataKey="demand" name="Demand (orders expected)" fill="#fb923c" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="supply" name="Supply (orders we can serve)" fill="#3b82f6" radius={[3, 3, 0, 0]} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
@@ -619,7 +522,7 @@ function AddPartnerForm({ prefill, onSuccess }: {
 
 export default function ShiftPlanner() {
   const [metrics, setMetrics] = useState<DayHourMetrics[]>([])
-  const [view, setView] = useState<ViewKey>('Sun')
+  const [range, setRange] = useState<DateRange>(() => defaultRange())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [prefill, setPrefill] = useState<Partial<{ shiftHours: 8|10|12; shiftStart: number; weeklyOff: DayKey }>>({})
@@ -633,6 +536,26 @@ export default function ShiftPlanner() {
   }, [])
 
   useEffect(() => { loadMetrics() }, [loadMetrics])
+
+  // Map the selected date range onto the day-of-week demand model and average it.
+  const { chartData, cells, numDays } = useMemo(() => {
+    const days = weekdaysInRange(range)
+    const cells: DayHourMetrics[] = days.flatMap((day) => metrics.filter((m) => m.day === day))
+    const cap = CAPACITY_PER_PARTNER_PER_HOUR
+    const chartData: ChartRow[] = HOURS.map((hour) => {
+      let dem = 0, sup = 0
+      for (const day of days) {
+        const m = metrics.find((x) => x.day === day && x.hour === hour)
+        if (m) { dem += m.demand; sup += m.effective * cap }
+      }
+      const n = days.length || 1
+      const demand = dem / n
+      const supply = sup / n
+      const coverage = demand > 0 ? Math.min(supply, demand) / demand : 1
+      return { hourLabel: formatHour(hour), demand, supply, coverage }
+    })
+    return { chartData, cells, numDays: days.length }
+  }, [metrics, range])
 
   function handleSlotSelect(opt: PartnerSlotOption) {
     setPrefill({ shiftHours: opt.shiftHours, shiftStart: opt.startTime, weeklyOff: opt.weeklyOff as DayKey })
@@ -661,15 +584,21 @@ export default function ShiftPlanner() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
-      <SummaryRow metrics={metrics} />
+      <SummaryRow cells={cells} numDays={numDays} />
 
-      {/* Day / Week selector */}
+      {/* Date-range selector */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-        <p className="text-xs font-medium text-gray-500 mb-3 uppercase tracking-wide">View</p>
-        <DaySelector selected={view} onSelect={setView} metrics={metrics} />
+        <p className="text-xs font-medium text-gray-500 mb-3 uppercase tracking-wide">Showing</p>
+        <DateRangePicker value={range} onChange={setRange} />
+        {isFuture(range) && (
+          <p className="text-xs text-amber-600 mt-3 flex items-center gap-1.5">
+            <AlertTriangle size={13} />
+            Future date — showing a forecast from historical demand. Live orders will replace this once real-time data is connected.
+          </p>
+        )}
       </div>
 
-      <MainChart view={view} metrics={metrics} />
+      <MainChart data={chartData} label={range.label} />
 
       <PartnerSlotPlanner onSelect={handleSlotSelect} />
 
