@@ -9,6 +9,9 @@ import {
   getMockOrders, buildInstantOrder, computeRecommendations, ROSTER,
   type MockOrder, type Recommendation, type OrderType,
 } from '@/lib/assignmentData'
+import { DateRangePicker, makeRange, niceDate, type DateRange } from '@/components/DateRangePicker'
+
+const SAMPLE_DATE = '2026-06-14' // the mock orders are all for this date
 
 // ─── Small UI helpers ────────────────────────────────────────────────────────
 
@@ -43,6 +46,9 @@ export default function Assignment() {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | OrderType>('all')
   const [instantCount, setInstantCount] = useState(0)
+  const [range, setRange] = useState<DateRange>(() => makeRange('last7'))
+
+  const inRange = range.start <= SAMPLE_DATE && SAMPLE_DATE <= range.end
 
   const recs = useMemo(() => computeRecommendations(orders, ROSTER), [orders])
 
@@ -83,6 +89,7 @@ export default function Assignment() {
   }
 
   const filtered = queue.filter((o) => {
+    if (!inRange) return false
     if (typeFilter !== 'all' && o.type !== typeFilter) return false
     if (!search.trim()) return true
     const q = search.toLowerCase()
@@ -112,6 +119,16 @@ export default function Assignment() {
         >
           <Zap size={14} /> Simulate instant order
         </button>
+      </div>
+
+      {/* Date selector */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+        <DateRangePicker value={range} onChange={setRange} />
+        {!inRange && (
+          <p className="text-xs text-amber-600 mt-3">
+            No orders for {niceDate(range.start)}{range.start !== range.end ? `–${niceDate(range.end)}` : ''} — this demo runs on 14 Jun 2026 sample data. Pick a range that includes 14 Jun (e.g. Last 7 days).
+          </p>
+        )}
       </div>
 
       {/* KPIs */}

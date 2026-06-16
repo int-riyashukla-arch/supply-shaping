@@ -282,6 +282,74 @@ export async function getPartnerSlotOptions(
   })
 }
 
+export async function updatePartner(id: string, fields: Partial<Omit<Partner, 'id'>>): Promise<void> {
+  if (fields.weeklyOff && !['Mon', 'Tue', 'Wed', 'Thu'].includes(fields.weeklyOff))
+    throw new Error('Weekly off must be Mon–Thu. Fri, Sat, Sun are peak demand days.')
+  const payload: Record<string, unknown> = {}
+  if (fields.name !== undefined) payload.name = fields.name
+  if (fields.mobile !== undefined) payload.mobile = fields.mobile
+  if (fields.address !== undefined) payload.address = fields.address
+  if (fields.shiftHours !== undefined) payload.shift_hours = fields.shiftHours
+  if (fields.shiftStart !== undefined) payload.shift_start = fields.shiftStart
+  if (fields.weeklyOff !== undefined) payload.weekly_off = fields.weeklyOff
+  if (fields.hasVehicle !== undefined) payload.has_vehicle = fields.hasVehicle
+  if (fields.joinDate !== undefined) payload.join_date = fields.joinDate
+  if (fields.status !== undefined) payload.status = fields.status
+  const { error } = await supabase.from('partners').update(payload).eq('id', id)
+  if (error) throw error
+}
+
+// ─── Attendance ──────────────────────────────────────────────────────────────
+// Two-step: beautician taps check-in (sets checkin_at), hub manager validates
+// (sets status + validated + notes). Gracefully degrades if the table is missing.
+
+export type AttendanceStatus = 'present' | 'absent' | 'leave'
+
+export interface AttendanceRecord {
+  partnerId: string
+  date: string
+  checkinAt: string | null
+  status: AttendanceStatus | null
+  validated: boolean
+  notes: string | null
+}
+
+/** Whether the attendance table exists / is reachable (false → fall back to manual marking). */
+export async function attendanceEnabled(): Promise<boolean> {
+  const { error } = await supabase.from('attendance').select('id', { head: true, count: 'exact' }).limit(1)
+  return !error
+}
+
+export async function getAttendance(date: string): Promise<Record<string, AttendanceRecord>> {
+  const { data, error } = await supabase.from('attendance').select('*').eq('date', date)
+  if (error) return {} // table may not exist yet
+  const map: Record<string, AttendanceRecord> = {}
+  for (const r of data ?? []) {
+    map[r.partner_id] = {
+      partnerId: r.partner_id, date: r.date, checkinAt: r.checkin_at,
+      status: r.status, validated: r.validated ?? false, notes: r.notes,
+    }
+  }
+  return map
+}
+
+export async function upsertAttendance(rec: {
+  partnerId: string
+  date: string
+  status?: AttendanceStatus | null
+  validated?: boolean
+  notes?: string | null
+  checkinAt?: string | null
+}): Promise<void> {
+  const payload: Record<string, unknown> = { partner_id: rec.partnerId, date: rec.date }
+  if (rec.status !== undefined) payload.status = rec.status
+  if (rec.validated !== undefined) payload.validated = rec.validated
+  if (rec.notes !== undefined) payload.notes = rec.notes
+  if (rec.checkinAt !== undefined) payload.checkin_at = rec.checkinAt
+  const { error } = await supabase.from('attendance').upsert(payload, { onConflict: 'partner_id,date' })
+  if (error) throw error
+}
+
 export async function addPartner(partner: Omit<Partner, 'id'>): Promise<Partner> {
   if (!['Mon', 'Tue', 'Wed', 'Thu'].includes(partner.weeklyOff))
     throw new Error('Weekly off must be Mon–Thu. Fri, Sat, Sun are peak demand days.')
