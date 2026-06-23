@@ -2,12 +2,13 @@ import { supabase } from './supabase'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-export const CAPACITY_PER_PARTNER_PER_HOUR = 0.5
+export const CAPACITY_PER_PARTNER_PER_HOUR = 0.80 // avg 55 min service + ~15 min travel
 export const LEAVE_BUFFER = 0.20
 
+// Derived from 2,553 confirmed bookings 15 May–20 Jun 2026
 export const DAY_MULTIPLIERS: Record<string, number> = {
-  Mon: 1.0, Tue: 0.72, Wed: 0.89, Thu: 0.91,
-  Fri: 1.23, Sat: 1.30, Sun: 1.89,
+  Mon: 1.00, Tue: 0.83, Wed: 0.88, Thu: 0.88,
+  Fri: 1.27, Sat: 1.32, Sun: 1.57,
 }
 
 export const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
