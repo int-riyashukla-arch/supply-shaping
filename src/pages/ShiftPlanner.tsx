@@ -94,7 +94,7 @@ const CustomTooltip = ({ active, payload, label }: {
       <p className="font-semibold text-gray-800 mb-2">{label}</p>
       <div className="space-y-1">
         {line('Demand', `${row.demand.toFixed(1)} orders/hr`, 'text-orange-600')}
-        {line('Supply', `${row.supply.toFixed(1)} partners`, 'text-indigo-600')}
+        {line('Supply capacity', `${row.supply.toFixed(1)} orders/hr`, 'text-indigo-600')}
         <div className="flex justify-between gap-6 border-t border-gray-100 pt-1 mt-1 font-semibold">
           <span className="text-gray-600">Coverage</span>
           <span className={covColor}>{cov}%</span>
@@ -131,7 +131,7 @@ function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
         <h2 className="text-base font-semibold text-gray-900">Supply vs demand by hour — {label}</h2>
         <p className="text-xs text-gray-500 mt-1 leading-relaxed">
           <span className="font-medium text-orange-500">Bars</span> = orders expected each hour (demand).{' '}
-          <span className="font-medium text-indigo-500">Line</span> = partners active that hour (supply).
+          <span className="font-medium text-indigo-500">Line</span> = orders/hr the team can serve (supply capacity). Both in the same unit.
         </p>
       </div>
 
@@ -162,14 +162,14 @@ function MainChart({ data, label }: { data: ChartRow[]; label: string }) {
             tickLine={{ stroke: '#cbd5e1' }}
             axisLine={{ stroke: '#94a3b8' }}
             allowDecimals={false}
-            label={{ value: 'orders/hr  ·  partners', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#94a3b8', textAnchor: 'middle' } }}
+            label={{ value: 'orders / hr', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#94a3b8', textAnchor: 'middle' } }}
           />
           <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(251,146,60,0.06)' }} />
           <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} formatter={(v) => <span className="text-gray-600">{v}</span>} />
           <Bar dataKey="demand" name="Demand (orders/hr)" fill="#fb923c" radius={[3, 3, 0, 0]} maxBarSize={34} />
           <Area
             dataKey="supply"
-            name="Supply (partners active)"
+            name="Supply capacity (orders/hr)"
             type="monotone"
             stroke="#6366f1"
             strokeWidth={2.5}
@@ -374,8 +374,6 @@ function PartnerSlotPlanner({ onSelect }: SlotPlannerProps) {
 
 // ─── Add Partner Form ─────────────────────────────────────────────────────────
 
-const PEAK_DAYS = ['Fri', 'Sat', 'Sun']
-
 function AddPartnerForm({ prefill, onSuccess }: {
   prefill: Partial<{ shiftHours: 8|10|12; shiftStart: number; weeklyOff: DayKey }>
   onSuccess: () => void
@@ -408,7 +406,6 @@ function AddPartnerForm({ prefill, onSuccess }: {
     const errs: Record<string, string> = {}
     if (!form.name.trim()) errs.name = 'Name is required'
     if (!form.mobile.trim()) errs.mobile = 'Mobile is required'
-    if (PEAK_DAYS.includes(form.weeklyOff)) errs.weeklyOff = 'Weekly off must be Mon–Thu'
     if (Object.keys(errs).length > 0) { setErrors(errs); return }
 
     setSubmitting(true)
@@ -519,28 +516,17 @@ function AddPartnerForm({ prefill, onSuccess }: {
             {prefill.weeklyOff && <span className="ml-1 text-indigo-500 text-xs">(pre-filled)</span>}
           </label>
           <div className="flex flex-wrap gap-2">
-            {DAYS.map((day) => {
-              const isPeak = PEAK_DAYS.includes(day)
-              return (
-                <div key={day} className="relative group">
-                  <button type="button" disabled={isPeak}
-                    onClick={() => !isPeak && setForm((f) => ({ ...f, weeklyOff: day }))}
-                    className={cn(
-                      'px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
-                      isPeak ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed'
-                        : form.weeklyOff === day ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'
-                    )}>
-                    {day}
-                  </button>
-                  {isPeak && (
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                      Peak demand — off not allowed
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+            {DAYS.map((day) => (
+              <button key={day} type="button"
+                onClick={() => setForm((f) => ({ ...f, weeklyOff: day }))}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
+                  form.weeklyOff === day ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'
+                )}>
+                {day}
+              </button>
+            ))}
           </div>
           {errors.weeklyOff && <p className="text-xs text-red-500 mt-1">{errors.weeklyOff}</p>}
         </div>
@@ -587,8 +573,8 @@ export default function ShiftPlanner() {
       }
       const n = days.length || 1
       const demand = dem / n
-      const supply = part / n // partners active on shift this hour
-      const coverage = demand > 0 ? Math.min(supply * cap, demand) / demand : 1
+      const supply = (part / n) * cap // orders/hr the team can serve
+      const coverage = demand > 0 ? Math.min(supply, demand) / demand : 1
       return { hourLabel: formatHour(hour), demand, supply, coverage }
     })
     return { chartData, cells, numDays: days.length }
