@@ -83,42 +83,50 @@ export async function getPartners(): Promise<Partner[]> {
   }))
 }
 
-/** Returns average confirmed orders per hour for each day-of-week, derived from raw bookings. */
-export async function getDayHourDemand(): Promise<Record<DayKey, Record<number, number>>> {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('scheduled_date, scheduled_time')
-    .eq('status', 'confirmed')
-  if (error) throw error
+export interface DemandMeta {
+  totalConfirmed: number
+  totalCancelled: number
+  dateFrom: string | null
+  dateTo: string | null
+  avgDurationMin: number
+}
 
-  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  const dayCounts: Record<string, number> = {}
-  const hoursByDay: Record<string, Record<number, number>> = {}
+// Base URL for the serverless demand API. Empty = same origin (the Vercel deploy).
+// For local `vite` dev, set VITE_API_BASE to the deployed origin so /api resolves.
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ''
 
-  const uniqueDates = new Set<string>()
-  for (const row of data ?? []) {
-    if (row.scheduled_date) uniqueDates.add(row.scheduled_date as string)
-  }
+let lastDemandMeta: DemandMeta | null = null
+/** Metadata (counts, date span, avg duration) from the most recent demand fetch. */
+export function getLastDemandMeta(): DemandMeta | null {
+  return lastDemandMeta
+}
 
-  for (const d of uniqueDates) {
-    const dow = DOW[new Date(d).getDay()]
-    dayCounts[dow] = (dayCounts[dow] ?? 0) + 1
-  }
+/**
+ * Average confirmed orders per hour for each day-of-week, from the LIVE company
+ * bookings DB (public.bookings) via the /api/bookings serverless endpoint.
+ * Optionally scope to a date range (YYYY-MM-DD).
+ */
+export async function getDayHourDemand(
+  range?: { from?: string; to?: string }
+): Promise<Record<DayKey, Record<number, number>>> {
+  const qs = new URLSearchParams()
+  if (range?.from) qs.set('from', range.from)
+  if (range?.to) qs.set('to', range.to)
+  const url = `${API_BASE}/api/bookings${qs.toString() ? `?${qs}` : ''}`
 
-  for (const row of data ?? []) {
-    if (!row.scheduled_date || !row.scheduled_time) continue
-    const dow = DOW[new Date(row.scheduled_date as string).getDay()]
-    const hour = parseInt((row.scheduled_time as string).split(':')[0], 10)
-    if (!hoursByDay[dow]) hoursByDay[dow] = {}
-    hoursByDay[dow][hour] = (hoursByDay[dow][hour] ?? 0) + 1
-  }
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Demand API ${res.status}: ${await res.text().catch(() => '')}`)
+  const json = await res.json()
+  if (!json.ok) throw new Error(json.error || 'Demand API returned an error')
 
+  lastDemandMeta = json.meta ?? null
+
+  // Normalize into a full DAYS × HOURS grid (missing cells → 0).
   const result: Record<string, Record<number, number>> = {}
   for (const day of DAYS) {
-    const count = Math.max(1, dayCounts[day] ?? 1)
     result[day] = {}
     for (const hour of HOURS) {
-      result[day][hour] = (hoursByDay[day]?.[hour] ?? 0) / count
+      result[day][hour] = Number(json.demand?.[day]?.[hour] ?? 0)
     }
   }
   return result as Record<DayKey, Record<number, number>>
