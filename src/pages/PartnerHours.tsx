@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { RefreshCw, UserX } from 'lucide-react'
 import {
-  getPartners, getHourlyDemand, getAttendance,
-  HOURS, DAY_MULTIPLIERS, type Partner, type AttendanceRecord,
+  getPartners, getDayHourDemand, getAttendance,
+  HOURS, type DayKey, type Partner, type AttendanceRecord,
 } from '@/lib/data'
 import { formatHour, cn } from '@/lib/utils'
 import {
@@ -68,7 +68,7 @@ function HourRow({ hour, active, weeklyOff, absent, demand }: {
 
 export default function PartnerHours() {
   const [partners, setPartners] = useState<Partner[]>([])
-  const [demandMap, setDemandMap] = useState<Record<number, number>>({})
+  const [demandByDay, setDemandByDay] = useState<Record<DayKey, Record<number, number>>>({} as Record<DayKey, Record<number, number>>)
   const [range, setRange] = useState<DateRange>(() => defaultRange())
   const [attendance, setAttendance] = useState<Record<string, AttendanceRecord>>({})
   const [loading, setLoading] = useState(true)
@@ -76,11 +76,9 @@ export default function PartnerHours() {
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const [p, hd] = await Promise.all([getPartners(), getHourlyDemand()])
+      const [p, bd] = await Promise.all([getPartners(), getDayHourDemand()])
       setPartners(p)
-      const dm: Record<number, number> = {}
-      for (const h of hd) dm[h.hour] = h.demand
-      setDemandMap(dm)
+      setDemandByDay(bd)
       setLoading(false)
     }
     load()
@@ -109,7 +107,7 @@ export default function PartnerHours() {
       active += scheduled.length - hourAbsent
       absent += hourAbsent
       off += partners.filter((p) => p.weeklyOff === day && covers(p, hour)).length
-      dem += (demandMap[hour] ?? 0) * (DAY_MULTIPLIERS[day] ?? 1)
+      dem += (demandByDay[day]?.[hour] ?? 0)
     }
     return { hour, active: active / n, off: off / n, absent: absent / n, demand: dem / n }
   })

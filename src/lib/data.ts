@@ -243,7 +243,7 @@ export async function getPartnerSlotOptions(
 
   for (const st of startOptions) {
     if (st + shiftHours > 21) continue
-    let bestOffDay = DAYS[0]
+    let bestOffDay: DayKey = DAYS[0]
     let bestScore = -Infinity
     let bestDefRed = 0
     for (const offDay of DAYS) {
