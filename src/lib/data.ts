@@ -5,12 +5,6 @@ import { supabase } from './supabase'
 export const CAPACITY_PER_PARTNER_PER_HOUR = 0.80 // avg 55 min service + ~15 min travel
 export const LEAVE_BUFFER = 0.20
 
-// Derived from 2,553 confirmed bookings 15 May–20 Jun 2026
-export const DAY_MULTIPLIERS: Record<string, number> = {
-  Mon: 1.00, Tue: 0.83, Wed: 0.88, Thu: 0.88,
-  Fri: 1.27, Sat: 1.32, Sun: 1.57,
-}
-
 export const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
 export const HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] as const
 
@@ -89,43 +83,63 @@ export async function getPartners(): Promise<Partner[]> {
   }))
 }
 
-export async function getHourlyDemand(): Promise<HourlyDemand[]> {
+/** Returns average confirmed orders per hour for each day-of-week, derived from raw bookings. */
+export async function getDayHourDemand(): Promise<Record<DayKey, Record<number, number>>> {
   const { data, error } = await supabase
     .from('orders')
     .select('scheduled_date, scheduled_time')
     .eq('status', 'confirmed')
   if (error) throw error
-  if (!data || data.length === 0) return HOURS.map((h) => ({ hour: h, demand: 0 }))
 
-  const hourCounts: Record<number, number> = {}
-  const dates = new Set<string>()
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const dayCounts: Record<string, number> = {}
+  const hoursByDay: Record<string, Record<number, number>> = {}
 
-  for (const row of data) {
+  const uniqueDates = new Set<string>()
+  for (const row of data ?? []) {
+    if (row.scheduled_date) uniqueDates.add(row.scheduled_date as string)
+  }
+
+  for (const d of uniqueDates) {
+    const dow = DOW[new Date(d).getDay()]
+    dayCounts[dow] = (dayCounts[dow] ?? 0) + 1
+  }
+
+  for (const row of data ?? []) {
+    if (!row.scheduled_date || !row.scheduled_time) continue
+    const dow = DOW[new Date(row.scheduled_date as string).getDay()]
     const hour = parseInt((row.scheduled_time as string).split(':')[0], 10)
-    hourCounts[hour] = (hourCounts[hour] ?? 0) + 1
-    if (row.scheduled_date) dates.add(row.scheduled_date as string)
+    if (!hoursByDay[dow]) hoursByDay[dow] = {}
+    hoursByDay[dow][hour] = (hoursByDay[dow][hour] ?? 0) + 1
   }
 
-  const sorted = Array.from(dates).sort()
-  let weekCount = 1
-  if (sorted.length >= 2) {
-    const diffDays = (new Date(sorted[sorted.length - 1]).getTime() - new Date(sorted[0]).getTime()) / 86400000
-    weekCount = Math.max(1, Math.ceil(diffDays / 7))
+  const result: Record<string, Record<number, number>> = {}
+  for (const day of DAYS) {
+    const count = Math.max(1, dayCounts[day] ?? 1)
+    result[day] = {}
+    for (const hour of HOURS) {
+      result[day][hour] = (hoursByDay[day]?.[hour] ?? 0) / count
+    }
   }
+  return result as Record<DayKey, Record<number, number>>
+}
 
-  return HOURS.map((h) => ({ hour: h, demand: (hourCounts[h] ?? 0) / weekCount }))
+/** Legacy: overall hourly average across all days (used by chart x-axis summary). */
+export async function getHourlyDemand(): Promise<HourlyDemand[]> {
+  const byDay = await getDayHourDemand()
+  return HOURS.map((h) => ({
+    hour: h,
+    demand: DAYS.reduce((s, d) => s + (byDay[d][h] ?? 0), 0) / DAYS.length,
+  }))
 }
 
 export async function getDayHourMetrics(): Promise<DayHourMetrics[]> {
-  const [partners, hourlyDemand] = await Promise.all([getPartners(), getHourlyDemand()])
-  const demandMap: Record<number, number> = {}
-  for (const hd of hourlyDemand) demandMap[hd.hour] = hd.demand
+  const [partners, byDay] = await Promise.all([getPartners(), getDayHourDemand()])
 
   const metrics: DayHourMetrics[] = []
   for (const day of DAYS) {
-    const mult = DAY_MULTIPLIERS[day]
     for (const hour of HOURS) {
-      const demand = (demandMap[hour] ?? 0) * mult
+      const demand = byDay[day][hour] ?? 0
       const required = demand / CAPACITY_PER_PARTNER_PER_HOUR
       const scheduled = partners.filter(
         (p) => p.weeklyOff !== day && partnerCoversHour(p, hour)
@@ -138,16 +152,13 @@ export async function getDayHourMetrics(): Promise<DayHourMetrics[]> {
 }
 
 export async function getNewSlotRecommendations(count: number): Promise<NewSlotRecommendation[]> {
-  const [partners, hourlyDemand] = await Promise.all([getPartners(), getHourlyDemand()])
-  const demandMap: Record<number, number> = {}
-  for (const hd of hourlyDemand) demandMap[hd.hour] = hd.demand
+  const [partners, byDay] = await Promise.all([getPartners(), getDayHourDemand()])
 
   function buildGrid(list: Partner[]): Record<string, number> {
     const grid: Record<string, number> = {}
     for (const day of DAYS) {
-      const mult = DAY_MULTIPLIERS[day]
       for (const hour of HOURS) {
-        const demand = (demandMap[hour] ?? 0) * mult
+        const demand = byDay[day][hour] ?? 0
         const required = demand / CAPACITY_PER_PARTNER_PER_HOUR
         const scheduled = list.filter((p) => p.weeklyOff !== day && partnerCoversHour(p, hour)).length
         grid[`${day}-${hour}`] = scheduled * (1 - LEAVE_BUFFER) - required
@@ -157,7 +168,6 @@ export async function getNewSlotRecommendations(count: number): Promise<NewSlotR
   }
 
   const currentGrid = buildGrid(partners)
-  const validOff = ['Mon', 'Tue', 'Wed', 'Thu']
   const fmt = (h: number) => h === 12 ? '12PM' : h < 12 ? `${h}AM` : `${h - 12}PM`
 
   interface Candidate { shiftHours: 8|10|12; startTime: number; score: number; offOptions: string[]; reason: string }
@@ -166,25 +176,28 @@ export async function getNewSlotRecommendations(count: number): Promise<NewSlotR
   for (const shiftHours of [8, 10, 12] as const) {
     for (const startTime of [6,7,8,9,10,11,12,13,14]) {
       if (startTime + shiftHours > 21) continue
-      const dayScores = validOff.map((offDay) => {
+      const dayScores = DAYS.map((offDay) => {
         let s = 0
         for (const workDay of DAYS) {
           if (workDay === offDay) continue
           for (const hour of HOURS) {
             if (hour < startTime || hour >= startTime + shiftHours) continue
             const def = currentGrid[`${workDay}-${hour}`] ?? 0
-            if (def < 0) s += Math.abs(def) * (def < -10 ? 2 : 1)
+            if (def < 0) s += Math.abs(def)
           }
         }
         return { day: offDay, score: s }
       })
       const totalScore = dayScores.reduce((s, d) => s + d.score, 0)
       dayScores.sort((a, b) => b.score - a.score)
-      const sunHours = HOURS.filter((h) => h >= startTime && h < startTime + shiftHours)
-      const avgSunDef = sunHours.reduce((s, h) => s + (currentGrid[`Sun-${h}`] ?? 0), 0) / (sunHours.length || 1)
-      const reason = avgSunDef < -5
-        ? `Covers ${fmt(startTime)}–${fmt(startTime + shiftHours)}: critical gap on Sun (avg ${avgSunDef.toFixed(1)} deficit)`
-        : `Covers ${fmt(startTime)}–${fmt(startTime + shiftHours)}: best coverage across peak mid-day hours`
+      const peakHours = HOURS.filter((h) => h >= startTime && h < startTime + shiftHours)
+      const peakDef = peakHours.reduce((s, h) => {
+        const worst = Math.min(...DAYS.map((d) => currentGrid[`${d}-${h}`] ?? 0))
+        return s + worst
+      }, 0) / (peakHours.length || 1)
+      const reason = peakDef < -3
+        ? `${fmt(startTime)}–${fmt(startTime + shiftHours)} closes the biggest supply gap (avg ${peakDef.toFixed(1)} deficit across peak hours)`
+        : `${fmt(startTime)}–${fmt(startTime + shiftHours)} provides best mid-day coverage`
       candidates.push({ shiftHours, startTime, score: totalScore, offOptions: dayScores.slice(0, 2).map((d) => d.day), reason })
     }
   }
@@ -207,15 +220,12 @@ export async function getPartnerSlotOptions(
   shiftHours: 8 | 10 | 12,
   startTime?: number
 ): Promise<PartnerSlotOption[]> {
-  const [partners, hourlyDemand] = await Promise.all([getPartners(), getHourlyDemand()])
-  const demandMap: Record<number, number> = {}
-  for (const hd of hourlyDemand) demandMap[hd.hour] = hd.demand
+  const [partners, byDay] = await Promise.all([getPartners(), getDayHourDemand()])
 
   const currentGrid: Record<string, number> = {}
   for (const day of DAYS) {
-    const mult = DAY_MULTIPLIERS[day]
     for (const hour of HOURS) {
-      const demand = (demandMap[hour] ?? 0) * mult
+      const demand = byDay[day][hour] ?? 0
       const required = demand / CAPACITY_PER_PARTNER_PER_HOUR
       const scheduled = partners.filter(
         (p) => p.weeklyOff !== day && hour >= p.shiftStart && hour < p.shiftStart + p.shiftHours
@@ -224,16 +234,19 @@ export async function getPartnerSlotOptions(
     }
   }
 
-  const validOff = ['Mon', 'Tue', 'Wed', 'Thu']
   const startOptions = startTime !== undefined ? [startTime] : [6, 7, 8, 9, 10, 11, 12, 13, 14]
   const fmt = (h: number) => h === 12 ? '12PM' : h < 12 ? `${h}AM` : `${h - 12}PM`
 
+  // For each start time, find the best weekly-off day (the one that loses the least)
   interface Candidate { startTime: number; weeklyOff: string; score: number; deficitReduction: number }
-  const candidates: Candidate[] = []
+  const byStart: Candidate[] = []
 
   for (const st of startOptions) {
     if (st + shiftHours > 21) continue
-    for (const offDay of validOff) {
+    let bestOffDay = DAYS[0]
+    let bestScore = -Infinity
+    let bestDefRed = 0
+    for (const offDay of DAYS) {
       let score = 0
       let deficitReduction = 0
       for (const workDay of DAYS) {
@@ -242,50 +255,39 @@ export async function getPartnerSlotOptions(
           if (hour < st || hour >= st + shiftHours) continue
           const def = currentGrid[`${workDay}-${hour}`] ?? 0
           if (def < 0) {
-            const contribution = Math.min(1 - LEAVE_BUFFER, Math.abs(def))
-            score += contribution * (def < -10 ? 2 : 1)
-            deficitReduction += contribution
+            score += Math.abs(def)
+            deficitReduction += Math.abs(def)
           }
         }
       }
-      candidates.push({ startTime: st, weeklyOff: offDay, score, deficitReduction })
+      if (score > bestScore) { bestScore = score; bestOffDay = offDay; bestDefRed = deficitReduction }
     }
+    byStart.push({ startTime: st, weeklyOff: bestOffDay, score: bestScore, deficitReduction: bestDefRed })
   }
 
-  candidates.sort((a, b) => b.score - a.score)
-
-  // Pick top 3 — each must have a distinct weeklyOff day
+  // Sort by score, pick top 3 with start times at least 2 hours apart
+  byStart.sort((a, b) => b.score - a.score)
   const chosen: Candidate[] = []
-  const usedOff = new Set<string>()
-  for (const c of candidates) {
+  for (const c of byStart) {
     if (chosen.length >= 3) break
-    if (!usedOff.has(c.weeklyOff)) {
-      chosen.push(c)
-      usedOff.add(c.weeklyOff)
-    }
+    if (!chosen.some((e) => Math.abs(e.startTime - c.startTime) < 2)) chosen.push(c)
   }
 
   return chosen.map((c) => {
     const endTime = c.startTime + shiftHours
-    const sunHours = HOURS.filter((h) => h >= c.startTime && h < endTime)
-    const avgSunDef = sunHours.reduce((s, h) => s + (currentGrid[`Sun-${h}`] ?? 0), 0) / (sunHours.length || 1)
-    const reason = avgSunDef < -3
-      ? `${fmt(c.startTime)}–${fmt(endTime)} covers the critical Sun peak gap (avg ${avgSunDef.toFixed(1)} deficit). Weekly off ${c.weeklyOff} loses the least coverage.`
-      : `${fmt(c.startTime)}–${fmt(endTime)} fills the highest-demand mid-day window. ${c.weeklyOff} is the lightest demand day for this slot.`
-    return {
-      shiftHours,
-      startTime: c.startTime,
-      endTime,
-      weeklyOff: c.weeklyOff,
-      reason,
-      deficitReduction: c.deficitReduction,
-    }
+    const coveredHours = HOURS.filter((h) => h >= c.startTime && h < endTime)
+    const avgDef = coveredHours.reduce((s, h) => {
+      const worst = Math.min(...DAYS.filter((d) => d !== c.weeklyOff).map((d) => currentGrid[`${d}-${h}`] ?? 0))
+      return s + worst
+    }, 0) / (coveredHours.length || 1)
+    const reason = avgDef < -3
+      ? `${fmt(c.startTime)}–${fmt(endTime)} closes the biggest supply gap (avg ${avgDef.toFixed(1)} deficit). ${c.weeklyOff} off loses the least coverage.`
+      : `${fmt(c.startTime)}–${fmt(endTime)} fills the highest-demand window. ${c.weeklyOff} is the lightest day for this slot.`
+    return { shiftHours, startTime: c.startTime, endTime, weeklyOff: c.weeklyOff, reason, deficitReduction: c.deficitReduction }
   })
 }
 
 export async function updatePartner(id: string, fields: Partial<Omit<Partner, 'id'>>): Promise<void> {
-  if (fields.weeklyOff && !['Mon', 'Tue', 'Wed', 'Thu'].includes(fields.weeklyOff))
-    throw new Error('Weekly off must be Mon–Thu. Fri, Sat, Sun are peak demand days.')
   const payload: Record<string, unknown> = {}
   if (fields.name !== undefined) payload.name = fields.name
   if (fields.mobile !== undefined) payload.mobile = fields.mobile
@@ -352,8 +354,6 @@ export async function upsertAttendance(rec: {
 }
 
 export async function addPartner(partner: Omit<Partner, 'id'>): Promise<Partner> {
-  if (!['Mon', 'Tue', 'Wed', 'Thu'].includes(partner.weeklyOff))
-    throw new Error('Weekly off must be Mon–Thu. Fri, Sat, Sun are peak demand days.')
   if (![8, 10, 12].includes(partner.shiftHours))
     throw new Error('Shift hours must be 8, 10, or 12.')
 
