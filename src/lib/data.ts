@@ -28,7 +28,7 @@ export interface Partner {
   weeklyOff: DayKey
   hasVehicle: boolean
   joinDate: string
-  status: 'Active' | 'Exited'
+  status: 'Active' | 'Inactive' | 'Exited'
 }
 
 export interface HourlyDemand { hour: number; demand: number }
@@ -85,7 +85,7 @@ export async function getPartners(): Promise<Partner[]> {
     weeklyOff: r.weekly_off as DayKey,
     hasVehicle: r.has_vehicle,
     joinDate: r.join_date,
-    status: r.status as 'Active' | 'Exited',
+    status: r.status as 'Active' | 'Inactive' | 'Exited',
   }))
 }
 
@@ -373,6 +373,6 @@ export async function addPartner(partner: Omit<Partner, 'id'>): Promise<Partner>
     id: data.id, name: data.name, mobile: data.mobile, address: data.address,
     shiftHours: data.shift_hours as 8|10|12, shiftStart: data.shift_start,
     weeklyOff: data.weekly_off as DayKey, hasVehicle: data.has_vehicle,
-    joinDate: data.join_date, status: data.status as 'Active'|'Exited',
+    joinDate: data.join_date, status: data.status as 'Active'|'Inactive'|'Exited',
   }
 }

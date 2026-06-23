@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import { updatePartner, DAYS } from '@/lib/data'
-import { RefreshCw, Search, Car, CalendarDays, Pencil, X } from 'lucide-react'
+import { updatePartner, DAYS, type DayKey } from '@/lib/data'
+import { RefreshCw, Search, Car, CalendarDays, Pencil, X, PowerOff, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { showToast } from '@/components/ui/toast'
 
@@ -18,18 +18,24 @@ interface Partner {
   status: string
 }
 
-const PEAK_DAYS = ['Fri', 'Sat', 'Sun']
+type StatusFilter = 'Active' | 'Inactive' | 'Exited' | 'all'
 
 function pad(n: number) { return String(n).padStart(2, '0') }
 function shiftRange(start: number, hours: number) {
   return `${pad(start)}:00 – ${pad(start + hours)}:00`
 }
 
+const STATUS_BADGE: Record<string, string> = {
+  Active:   'bg-emerald-100 text-emerald-700',
+  Inactive: 'bg-amber-100 text-amber-700',
+  Exited:   'bg-gray-100 text-gray-500',
+}
+
 export default function Partners() {
   const [partners, setPartners] = useState<Partner[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'Active' | 'Exited' | 'all'>('Active')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('Active')
   const [editing, setEditing] = useState<Partner | null>(null)
 
   async function load() {
@@ -43,27 +49,52 @@ export default function Partners() {
 
   useEffect(() => { load() }, [statusFilter])
 
+  async function toggleActive(p: Partner) {
+    const next = p.status === 'Active' ? 'Inactive' : 'Active'
+    try {
+      await updatePartner(p.id, { status: next as 'Active' | 'Inactive' | 'Exited' })
+      showToast(`${p.name} marked ${next}`, 'success')
+      load()
+    } catch {
+      showToast('Failed to update status', 'error')
+    }
+  }
+
   const filtered = partners.filter((p) =>
     !search.trim() ||
     p.name.toLowerCase().includes(search.toLowerCase()) ||
     p.mobile.includes(search) ||
-    p.address?.toLowerCase().includes(search.toLowerCase())
+    (p.address ?? '').toLowerCase().includes(search.toLowerCase())
   )
 
-  const active = partners.filter((p) => p.status === 'Active').length
-  const withVehicle = partners.filter((p) => p.has_vehicle).length
+  // KPI counts always from the full unfiltered list
+  const [allPartners, setAllPartners] = useState<Partner[]>([])
+  useEffect(() => {
+    supabase.from('partners').select('*').then(({ data }) => setAllPartners((data ?? []) as Partner[]))
+  }, [partners])
+  const countActive   = allPartners.filter((p) => p.status === 'Active').length
+  const countInactive = allPartners.filter((p) => p.status === 'Inactive').length
+  const countExited   = allPartners.filter((p) => p.status === 'Exited').length
+  const countVehicle  = partners.filter((p) => p.has_vehicle).length
+
+  const FILTERS: { key: StatusFilter; label: string }[] = [
+    { key: 'Active',   label: 'Active' },
+    { key: 'Inactive', label: 'Inactive' },
+    { key: 'Exited',   label: 'Exited' },
+    { key: 'all',      label: 'All' },
+  ]
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-7xl mx-auto">
       {/* KPI strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
-          { label: 'Total Partners', value: partners.length },
-          { label: 'Active', value: active },
-          { label: 'With Vehicle', value: withVehicle },
-          { label: 'Exited', value: partners.length - active },
+          { label: 'Active',   value: countActive,   cls: 'border-l-4 border-emerald-500' },
+          { label: 'Inactive', value: countInactive, cls: 'border-l-4 border-amber-500' },
+          { label: 'Exited',   value: countExited,   cls: 'border-l-4 border-gray-300' },
+          { label: 'With Vehicle', value: countVehicle, cls: '' },
         ].map((k) => (
-          <div key={k.label} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+          <div key={k.label} className={cn('bg-white rounded-xl border border-gray-200 shadow-sm p-4', k.cls)}>
             <p className="text-xs text-gray-500 mb-1">{k.label}</p>
             <p className="text-2xl font-bold text-gray-900">{k.value}</p>
           </div>
@@ -73,18 +104,18 @@ export default function Partners() {
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center justify-between">
         <div className="flex gap-2">
-          {(['Active', 'Exited', 'all'] as const).map((s) => (
+          {FILTERS.map(({ key, label }) => (
             <button
-              key={s}
-              onClick={() => setStatusFilter(s)}
+              key={key}
+              onClick={() => setStatusFilter(key)}
               className={cn(
                 'px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
-                statusFilter === s
+                statusFilter === key
                   ? 'bg-indigo-600 text-white border-indigo-600'
                   : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
               )}
             >
-              {s === 'all' ? 'All' : s}
+              {label}
             </button>
           ))}
         </div>
@@ -119,7 +150,7 @@ export default function Partners() {
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={9} className="text-center py-12 text-gray-400 text-sm">No partners found</td></tr>
               ) : filtered.map((p) => (
-                <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                <tr key={p.id} className={cn('border-b border-gray-50 hover:bg-gray-50 transition-colors', p.status === 'Inactive' && 'opacity-60')}>
                   <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{p.name}</td>
                   <td className="px-4 py-3 text-gray-600 font-mono text-xs">{p.mobile}</td>
                   <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{p.address || '—'}</td>
@@ -141,19 +172,36 @@ export default function Partners() {
                     <CalendarDays size={12} className="inline mr-1 text-gray-400" />{p.join_date}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={cn('px-2 py-0.5 rounded-full text-xs font-medium',
-                      p.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
-                    )}>
+                    <span className={cn('px-2 py-0.5 rounded-full text-xs font-medium', STATUS_BADGE[p.status] ?? 'bg-gray-100 text-gray-500')}>
                       {p.status}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => setEditing(p)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 text-xs font-medium hover:bg-gray-50 hover:border-indigo-300"
-                    >
-                      <Pencil size={12} /> Edit
-                    </button>
+                    <div className="flex items-center justify-end gap-1.5">
+                      {/* Quick deactivate / reactivate */}
+                      {p.status !== 'Exited' && (
+                        <button
+                          onClick={() => toggleActive(p)}
+                          title={p.status === 'Active' ? 'Mark Inactive' : 'Mark Active'}
+                          className={cn(
+                            'inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium transition-colors',
+                            p.status === 'Active'
+                              ? 'border-amber-200 text-amber-600 hover:bg-amber-50'
+                              : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50'
+                          )}
+                        >
+                          {p.status === 'Active'
+                            ? <><PowerOff size={11} /> Deactivate</>
+                            : <><RotateCcw size={11} /> Reactivate</>}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setEditing(p)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-gray-200 text-gray-600 text-xs font-medium hover:bg-gray-50 hover:border-indigo-300"
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -191,7 +239,7 @@ function EditPartnerModal({ partner, onClose, onSaved }: {
     shift_start: partner.shift_start,
     weekly_off: partner.weekly_off,
     has_vehicle: partner.has_vehicle,
-    status: partner.status as 'Active' | 'Exited',
+    status: partner.status as 'Active' | 'Inactive' | 'Exited',
   })
   const [saving, setSaving] = useState(false)
   const startOptions = Array.from({ length: 9 }, (_, i) => 6 + i)
@@ -206,7 +254,7 @@ function EditPartnerModal({ partner, onClose, onSaved }: {
       await updatePartner(partner.id, {
         name: form.name, mobile: form.mobile, address: form.address,
         shiftHours: form.shift_hours, shiftStart: form.shift_start,
-        weeklyOff: form.weekly_off as 'Mon' | 'Tue' | 'Wed' | 'Thu',
+        weeklyOff: form.weekly_off as DayKey,
         hasVehicle: form.has_vehicle, status: form.status,
       })
       showToast(`${form.name} updated`, 'success')
@@ -238,8 +286,9 @@ function EditPartnerModal({ partner, onClose, onSaved }: {
               <input value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} className={inputCls} />
             </Field>
             <Field label="Status">
-              <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Exited' }))} className={inputCls}>
+              <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as 'Active' | 'Inactive' | 'Exited' }))} className={inputCls}>
                 <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
                 <option value="Exited">Exited</option>
               </select>
             </Field>
@@ -260,25 +309,20 @@ function EditPartnerModal({ partner, onClose, onSaved }: {
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-2">Weekly Off</label>
             <div className="flex flex-wrap gap-2">
-              {DAYS.map((day) => {
-                const isPeak = PEAK_DAYS.includes(day)
-                return (
-                  <button
-                    key={day}
-                    type="button"
-                    disabled={isPeak}
-                    onClick={() => setForm((f) => ({ ...f, weekly_off: day }))}
-                    title={isPeak ? 'Peak demand — off not allowed' : undefined}
-                    className={cn('px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
-                      isPeak ? 'bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed'
-                        : form.weekly_off === day ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'
-                    )}
-                  >
-                    {day}
-                  </button>
-                )
-              })}
+              {DAYS.map((day) => (
+                <button
+                  key={day}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, weekly_off: day }))}
+                  className={cn('px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
+                    form.weekly_off === day
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'
+                  )}
+                >
+                  {day}
+                </button>
+              ))}
             </div>
           </div>
 
