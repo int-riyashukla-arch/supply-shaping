@@ -265,12 +265,20 @@ export async function getPartnerSlotOptions(
     byStart.push({ startTime: st, weeklyOff: bestOffDay, score: bestScore, deficitReduction: bestDefRed })
   }
 
-  // Sort by score, pick top 3 with start times at least 2 hours apart
+  // Pick best from each time band so morning/afternoon/evening are all represented
+  const bands = [
+    byStart.filter((c) => c.startTime <= 9),           // morning  (6–9AM start)
+    byStart.filter((c) => c.startTime >= 10 && c.startTime <= 13), // afternoon (10AM–1PM start)
+    byStart.filter((c) => c.startTime >= 14),           // evening  (2PM+ start)
+  ]
+  const chosen: Candidate[] = bands
+    .map((band) => band.sort((a, b) => b.score - a.score)[0])
+    .filter(Boolean) as Candidate[]
+  // If a band was empty, fill from remaining best
   byStart.sort((a, b) => b.score - a.score)
-  const chosen: Candidate[] = []
   for (const c of byStart) {
     if (chosen.length >= 3) break
-    if (!chosen.some((e) => Math.abs(e.startTime - c.startTime) < 2)) chosen.push(c)
+    if (!chosen.some((e) => e.startTime === c.startTime)) chosen.push(c)
   }
 
   return chosen.map((c) => {
