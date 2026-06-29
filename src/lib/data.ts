@@ -242,7 +242,9 @@ export async function getPartnerSlotOptions(
     }
   }
 
-  const startOptions = startTime !== undefined ? [startTime] : [6, 7, 8, 9, 10, 11, 12, 13, 14]
+  // Operating hours are ~8:30am–9pm, so a shift must start no earlier than 8
+  // and end no later than 21:00 (the `st + shiftHours > 21` guard below).
+  const startOptions = startTime !== undefined ? [startTime] : [8, 9, 10, 11, 12, 13]
   const fmt = (h: number) => h === 12 ? '12PM' : h < 12 ? `${h}AM` : `${h - 12}PM`
 
   // For each start time, find the best weekly-off day (the one that loses the least)
@@ -273,21 +275,25 @@ export async function getPartnerSlotOptions(
     byStart.push({ startTime: st, weeklyOff: bestOffDay, score: bestScore, deficitReduction: bestDefRed })
   }
 
-  // Pick best from each time band so morning/afternoon/evening are all represented
+  // Pick the best slot from each time band so the three options are spread across
+  // the operating day (early / mid / late start) rather than clustered together.
   const bands = [
-    byStart.filter((c) => c.startTime <= 9),           // morning  (6–9AM start)
-    byStart.filter((c) => c.startTime >= 10 && c.startTime <= 13), // afternoon (10AM–1PM start)
-    byStart.filter((c) => c.startTime >= 14),           // evening  (2PM+ start)
+    byStart.filter((c) => c.startTime <= 9),                        // early start (8–9AM)
+    byStart.filter((c) => c.startTime >= 10 && c.startTime <= 11),  // mid start   (10–11AM)
+    byStart.filter((c) => c.startTime >= 12),                       // late start  (12PM+)
   ]
   const chosen: Candidate[] = bands
     .map((band) => band.sort((a, b) => b.score - a.score)[0])
     .filter(Boolean) as Candidate[]
-  // If a band was empty, fill from remaining best
+  // If a band was empty, fill from the remaining highest-scoring starts
   byStart.sort((a, b) => b.score - a.score)
   for (const c of byStart) {
     if (chosen.length >= 3) break
     if (!chosen.some((e) => e.startTime === c.startTime)) chosen.push(c)
   }
+  // Rank the final three by how much deficit they actually close, so #1 is the
+  // genuine biggest gap-filler — not just the earliest start.
+  chosen.sort((a, b) => b.deficitReduction - a.deficitReduction)
 
   return chosen.map((c) => {
     const endTime = c.startTime + shiftHours
@@ -298,7 +304,9 @@ export async function getPartnerSlotOptions(
     }, 0) / (coveredHours.length || 1)
     const reason = avgDef < -3
       ? `${fmt(c.startTime)}–${fmt(endTime)} closes the biggest supply gap (avg ${avgDef.toFixed(1)} deficit). ${c.weeklyOff} off loses the least coverage.`
-      : `${fmt(c.startTime)}–${fmt(endTime)} fills the highest-demand window. ${c.weeklyOff} is the lightest day for this slot.`
+      : c.deficitReduction > 0.5
+      ? `${fmt(c.startTime)}–${fmt(endTime)} fills the largest remaining gap. ${c.weeklyOff} is the lightest day for this slot.`
+      : `${fmt(c.startTime)}–${fmt(endTime)} — this window is already well-covered, so this slot mostly adds buffer. ${c.weeklyOff} off loses the least.`
     return { shiftHours, startTime: c.startTime, endTime, weeklyOff: c.weeklyOff, reason, deficitReduction: c.deficitReduction }
   })
 }
