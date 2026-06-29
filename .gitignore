@@ -30,3 +30,8 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# Separate repo, not part of this app
+blush-payroll/
+operations-dashboard.html
+scripts/
