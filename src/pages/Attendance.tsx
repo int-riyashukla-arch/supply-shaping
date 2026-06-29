@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { RefreshCw, Check, Fingerprint, AlertTriangle, ShieldCheck } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatClock } from '@/lib/utils'
 import {
   attendanceEnabled, getAttendance, upsertAttendance,
   type AttendanceStatus, type AttendanceRecord,
@@ -164,7 +164,7 @@ export default function Attendance() {
                   return (
                     <tr key={p.id} className="border-b border-gray-50 hover:bg-gray-50 align-top">
                       <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{p.name}</td>
-                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{pad(p.shift_start)}:00 – {pad(p.shift_start + p.shift_hours)}:00</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{formatClock(p.shift_start)} – {formatClock(p.shift_start + p.shift_hours)}</td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         {r?.checkinAt ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 text-xs font-medium">

@@ -6,7 +6,10 @@ import {
   getDayHourMetrics, getPartnerSlotOptions, addPartner,
   type DayHourMetrics, type PartnerSlotOption, type DayKey,
 } from '@/lib/data'
-import { formatHour, cn } from '@/lib/utils'
+import { formatHour, formatClock, cn } from '@/lib/utils'
+
+// Operating hours 8:30am–9pm: opening shift starts at 8:30.
+const START_OPTIONS = [8.5, 9, 10, 11, 12, 13]
 import { showToast } from '@/components/ui/toast'
 import { DateRangePicker, defaultRange, weekdaysInRange, isFuture, type DateRange } from '@/components/DateRangePicker'
 
@@ -217,7 +220,6 @@ function PartnerSlotPlanner({ onSelect }: SlotPlannerProps) {
     onSelect(opt)
   }
 
-  const startOptions = Array.from({ length: 9 }, (_, i) => 6 + i)
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
@@ -267,8 +269,8 @@ function PartnerSlotPlanner({ onSelect }: SlotPlannerProps) {
               onChange={(e) => setStartTime(Number(e.target.value))}
               className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
-              {startOptions.map((h) => (
-                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              {START_OPTIONS.map((h) => (
+                <option key={h} value={h}>{formatClock(h)}</option>
               ))}
             </select>
             <span className="text-xs text-gray-400">Partner's preferred start (system may override for best coverage)</span>
@@ -424,7 +426,6 @@ function AddPartnerForm({ prefill, onSuccess }: {
     }
   }
 
-  const startOptions = Array.from({ length: 9 }, (_, i) => 6 + i)
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6">
@@ -489,8 +490,8 @@ function AddPartnerForm({ prefill, onSuccess }: {
             <select value={form.shiftStart}
               onChange={(e) => setForm((f) => ({ ...f, shiftStart: Number(e.target.value) }))}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              {startOptions.map((h) => (
-                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+              {START_OPTIONS.map((h) => (
+                <option key={h} value={h}>{formatClock(h)}</option>
               ))}
             </select>
           </div>

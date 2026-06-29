@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { formatHour } from './utils'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -242,10 +243,10 @@ export async function getPartnerSlotOptions(
     }
   }
 
-  // Operating hours are ~8:30am–9pm, so a shift must start no earlier than 8
-  // and end no later than 21:00 (the `st + shiftHours > 21` guard below).
-  const startOptions = startTime !== undefined ? [startTime] : [8, 9, 10, 11, 12, 13]
-  const fmt = (h: number) => h === 12 ? '12PM' : h < 12 ? `${h}AM` : `${h - 12}PM`
+  // Operating hours are 8:30am–9pm, so the opening shift starts at 8:30 and no
+  // shift may end after 21:00 (the `st + shiftHours > 21` guard below).
+  const startOptions = startTime !== undefined ? [startTime] : [8.5, 9, 10, 11, 12, 13]
+  const fmt = (h: number) => formatHour(h)
 
   // For each start time, find the best weekly-off day (the one that loses the least)
   interface Candidate { startTime: number; weeklyOff: string; score: number; deficitReduction: number }
@@ -262,7 +263,8 @@ export async function getPartnerSlotOptions(
       for (const workDay of DAYS) {
         if (workDay === offDay) continue
         for (const hour of HOURS) {
-          if (hour < st || hour >= st + shiftHours) continue
+          // overlap so a half-hour start (e.g. 8:30) still covers the opening bucket
+          if (st >= hour + 1 || st + shiftHours <= hour) continue
           const def = currentGrid[`${workDay}-${hour}`] ?? 0
           if (def < 0) {
             score += Math.abs(def)
@@ -297,7 +299,7 @@ export async function getPartnerSlotOptions(
 
   return chosen.map((c) => {
     const endTime = c.startTime + shiftHours
-    const coveredHours = HOURS.filter((h) => h >= c.startTime && h < endTime)
+    const coveredHours = HOURS.filter((h) => c.startTime < h + 1 && endTime > h)
     const avgDef = coveredHours.reduce((s, h) => {
       const worst = Math.min(...DAYS.filter((d) => d !== c.weeklyOff).map((d) => currentGrid[`${d}-${h}`] ?? 0))
       return s + worst

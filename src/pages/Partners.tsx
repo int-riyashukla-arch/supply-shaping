@@ -2,7 +2,10 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { updatePartner, DAYS, type DayKey } from '@/lib/data'
 import { RefreshCw, Search, Car, CalendarDays, Pencil, X, PowerOff, RotateCcw } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { cn, formatClock } from '@/lib/utils'
+
+// Operating hours 8:30am–9pm: opening shift starts at 8:30.
+const START_OPTIONS = [8.5, 9, 10, 11, 12, 13]
 import { showToast } from '@/components/ui/toast'
 
 interface Partner {
@@ -20,9 +23,8 @@ interface Partner {
 
 type StatusFilter = 'Active' | 'Inactive' | 'Exited' | 'all'
 
-function pad(n: number) { return String(n).padStart(2, '0') }
 function shiftRange(start: number, hours: number) {
-  return `${pad(start)}:00 – ${pad(start + hours)}:00`
+  return `${formatClock(start)} – ${formatClock(start + hours)}`
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -242,7 +244,6 @@ function EditPartnerModal({ partner, onClose, onSaved }: {
     status: partner.status as 'Active' | 'Inactive' | 'Exited',
   })
   const [saving, setSaving] = useState(false)
-  const startOptions = Array.from({ length: 9 }, (_, i) => 6 + i)
 
   async function save() {
     if (!form.name.trim() || !form.mobile.trim()) {
@@ -301,7 +302,10 @@ function EditPartnerModal({ partner, onClose, onSaved }: {
             </Field>
             <Field label="Start Time">
               <select value={form.shift_start} onChange={(e) => setForm((f) => ({ ...f, shift_start: Number(e.target.value) }))} className={inputCls}>
-                {startOptions.map((h) => <option key={h} value={h}>{pad(h)}:00</option>)}
+                {/* include the partner's own start so an off-grid value (e.g. 8:00) still shows */}
+                {[...new Set([form.shift_start, ...START_OPTIONS])].sort((a, b) => a - b).map((h) => (
+                  <option key={h} value={h}>{formatClock(h)}</option>
+                ))}
               </select>
             </Field>
           </div>
