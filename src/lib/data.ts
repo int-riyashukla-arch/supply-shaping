@@ -6,7 +6,7 @@ export const CAPACITY_PER_PARTNER_PER_HOUR = 0.80 // avg 55 min service + ~15 mi
 export const LEAVE_BUFFER = 0.20
 
 export const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
-export const HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] as const
+export const HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] as const
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
